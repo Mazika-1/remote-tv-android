@@ -398,13 +398,15 @@
 
     wrap.innerHTML = shows.map(function (s, i) {
       var svc = service(s.service);
-      var hasSteps = (s.steps && s.steps.length) || (s.link && s.linkWorks);
+      var mode = showMode(s);
+      var hasSteps = mode === "steps";
       var isReady = ready && ready.showId === s.id;
       var autoTxt = s.auto === "nightly" ? "Next ep. tomorrow" : s.auto === "watched" ? "+1 after nights you watch" : "";
       var foot = isReady
         ? '<div class="ready-bar"><span class="rec-dot ready"></span><span class="ready-txt">' + (ready.paused ? "Paused at the start on your TV" : "Playing on your TV") + '</span>' +
             '<button class="mini-btn" data-act="tv-pause" aria-label="Pause">' + icon("pause") + '</button>' +
             '<button class="mini-btn primary" data-act="tv-play" aria-label="Play">' + icon("play") + '</button></div>'
+        : mode === "cast" ? '<span class="go-direct">' + icon("check") + 'Opens ' + esc(svc.label) + ' on your phone: tap Cast, then Play</span>'
         : hasSteps ? '<span class="go-direct">' + icon("check") + 'Goes straight to your show' + (s.pauseAtStart !== false ? ", paused" : "") + '</span>'
         : '<button class="teach-link" data-act="teach">' + icon("play") + 'Make Play go to the episode</button>';
       return '' +
@@ -447,7 +449,7 @@
     switch (btn.dataset.act) {
       case "play": playShow(show, btn); break;
       case "edit": openShowSheet(show); break;
-      case "teach": openTeach(show); break;
+      case "teach": openGoToSheet(show); break;
       case "tv-play": sendKey("play"); ready.paused = false; renderShows(); break;
       case "tv-pause": sendKey("pause"); ready.paused = true; renderShows(); break;
       case "ep+": updateShow(id, function (s) { s.episode += 1; }); renderShows(); break;
@@ -467,6 +469,17 @@
   var playing = null; // { stop: bool }
   var ready = null;   // { showId, paused } once a show is cued up on the TV
 
+  /** How Play gets to the show: "cast" (phone app), "steps" (recorded), or "open" (just the app). */
+  function showMode(s) {
+    if (s.mode === "cast" && s.castLink) return "cast";
+    if (s.mode === "steps" && s.steps && s.steps.length) return "steps";
+    if (!s.mode) {
+      if (s.castLink) return "cast";
+      if ((s.steps && s.steps.length) || (s.link && s.linkWorks)) return "steps";
+    }
+    return "open";
+  }
+
   function stepFactor() { return getJSON("remotetv.patient", false) ? 1.6 : 1.15; }
 
   /** Turns a pasted share link into what the TV app expects (Netflix has a known format). */
@@ -480,6 +493,7 @@
     var tv = activeTv();
     if (!tv) { openOnboarding("find"); return; }
     if (!tv.paired) { openOnboarding("find"); return; }
+    if (showMode(show) === "cast") { castShow(show, btn); return; }
     var app = appFor(show.service);
     if (!app) { openLinkSheet(show.service, function () { playShow(show, btn); }); return; }
     if (playing) return;
@@ -538,6 +552,88 @@
     }
   }
 
+  /** Cast mode: wake the TV, then open the show in the streaming service's phone app. */
+  async function castShow(show, btn) {
+    if (playing) return;
+    var svc = service(show.service);
+    playing = { stop: false };
+    btn.classList.add("busy");
+    try {
+      var power = await tvCall("GET", "/state/device/power_mode", null, { timeout: 3000 });
+      if (power.status && readPowerOn(power) === false) {
+        toast("Turning on the TV…");
+        await sendKey("pow_on");
+        await delay(600);
+      }
+      var opened = hasBridge() && VizioBridge.openUrl && VizioBridge.openUrl(show.castLink);
+      if (!opened) { toast("Couldn't open the link. Check it in the show's settings.", { bad: true }); return; }
+      toast("In " + svc.label + ": tap Cast, pick " + tvLabel(activeTv()) + ", then Play.", { duration: 8000 });
+      updateShow(show.id, function (s) {
+        var d = tvDay();
+        s.playedDays = (s.playedDays || []).filter(function (x) { return x !== d; }).concat([d]);
+      });
+    } finally {
+      btn.classList.remove("busy");
+      playing = null;
+    }
+  }
+
+  // ---------- choose how Play gets to the show ----------
+  function openGoToSheet(show) {
+    var svc = service(show.service);
+    var mode = showMode(show);
+    var body = openSheet(
+      '<h2>Go straight to ' + esc(show.name) + '</h2>' +
+      '<p class="lead">Pick how Play gets you to the episode.</p>' +
+      '<button class="goto-opt' + (mode === "cast" ? " sel" : "") + '" id="gCast">' +
+        '<div class="goto-head"><b>Cast from your phone</b><span class="tag good">Most reliable</span></div>' +
+        '<small>Play turns on the TV and opens ' + esc(show.name) + ' in the ' + esc(svc.label) + ' app on your phone. You tap <b>Cast</b>, then <b>Play</b>. ' + esc(svc.label) + ' always knows which episode you\'re on.</small>' +
+      '</button>' +
+      '<div class="goto-detail' + (mode === "cast" ? "" : " hidden") + '" id="gCastBox">' +
+        '<ol class="steps">' +
+          '<li><span>In the <b>' + esc(svc.label) + '</b> app on your phone, open ' + esc(show.name) + '.</span></li>' +
+          '<li><span>Tap <b>Share</b> → <b>Copy link</b>, then come back here.</span></li>' +
+        '</ol>' +
+        '<div style="display:flex;gap:8px"><input class="input" id="gLink" placeholder="Paste the show link" value="' + esc(show.castLink || "") + '">' +
+        '<button class="btn" id="gPaste">Paste</button></div>' +
+        '<div class="status-msg" id="gMsg"></div>' +
+        '<button class="btn primary big block" id="gCastSave" style="margin-top:6px">Use this link</button>' +
+      '</div>' +
+      '<button class="goto-opt' + (mode === "steps" ? " sel" : "") + '" id="gSteps">' +
+        '<div class="goto-head"><b>Hands-free</b><span class="tag">' + ((show.steps || []).length ? "Taught" : "Teach once") + '</span></div>' +
+        '<small>Play does everything on the TV by repeating button presses you record once, and pauses at the start. Fully automatic, but menus or slow loading can trip it up.</small>' +
+      '</button>' +
+      '<button class="goto-opt' + (mode === "open" ? " sel" : "") + '" id="gOpen">' +
+        '<div class="goto-head"><b>Just open ' + esc(svc.label) + '</b></div>' +
+        '<small>Play turns on the TV and opens the app. You pick the show with your remote.</small>' +
+      '</button>'
+    );
+    on("gCast", function () { $("#gCastBox").classList.remove("hidden"); $$(".goto-opt", body).forEach(function (x) { x.classList.toggle("sel", x.id === "gCast"); }); });
+    on("gPaste", function () {
+      var t = hasBridge() && VizioBridge.clipboardText ? VizioBridge.clipboardText() : "";
+      var m = /https?:\/\/\S+/.exec(t || "");
+      if (m) { $("#gLink").value = m[0]; setMsg("gMsg", ""); }
+      else setMsg("gMsg", "No link on the clipboard yet. Copy it from the " + svc.label + " app first.", "bad");
+    });
+    on("gCastSave", function () {
+      var raw = $("#gLink").value.trim(), m = /https?:\/\/\S+/.exec(raw);
+      if (!m) { setMsg("gMsg", "Paste the link you copied from " + svc.label + ".", "bad"); return; }
+      updateShow(show.id, function (x) { x.castLink = m[0]; x.mode = "cast"; });
+      closeSheet(); renderShows();
+      toast("Done. Play now opens " + show.name + " in " + svc.label + " on your phone.", { duration: 4500 });
+    });
+    on("gSteps", function () {
+      updateShow(show.id, function (x) { x.mode = "steps"; });
+      closeSheet();
+      if ((show.steps || []).length) { renderShows(); toast("Play will use your recorded steps"); }
+      else openTeach(findShow(show.id));
+    });
+    on("gOpen", function () {
+      updateShow(show.id, function (x) { x.mode = "open"; });
+      closeSheet(); renderShows();
+    });
+  }
+
   // ---------- add / edit show ----------
   function openShowSheet(show) {
     var isNew = !show;
@@ -556,9 +652,15 @@
       '</div></div>' +
       (isNew ? '' :
         '<div class="field"><label>Go straight to the episode</label><div class="card inset">' +
-          '<div class="row-item"><div class="ri-main"><div class="ri-title">' + (nSteps ? "Taught: " + nSteps + " steps" : "Not set up") + '</div>' +
-          '<div class="ri-sub">' + (nSteps ? "After opening the app, Play repeats your steps to start the show." : "Teach Play the button presses that get from the app to your show.") + '</div></div>' +
-          '<button class="pill-btn accent" id="fTeach">' + (nSteps ? "Re-teach" : "Teach") + '</button></div>' +
+          (function () {
+            var m = showMode(s);
+            var title = m === "cast" ? "Cast from your phone" : m === "steps" ? "Hands-free: " + nSteps + " recorded steps" : "Just opens the app";
+            var sub = m === "cast" ? "Opens the show in the " + service(s.service).label + " phone app. You tap Cast, then Play."
+              : m === "steps" ? "Play repeats your recorded steps on the TV." : "Choose how Play should get to your episode.";
+            return '<div class="row-item"><div class="ri-main"><div class="ri-title">' + title + '</div><div class="ri-sub">' + sub + '</div></div>' +
+              '<button class="pill-btn accent" id="fGoTo">Change</button></div>' +
+              (m === "steps" ? '<button class="link-btn" id="fTeach" style="padding:8px 0 0">Re-teach steps</button>' : '');
+          })() +
           (nSteps ? '<button class="link-btn" id="fClearSteps" style="padding:8px 0 0">Remove steps</button>' : '') +
           '<label class="switch-row"><span><b>Pause it at the start</b><small>So it\'s cued up and waiting when you sit down</small></span>' +
             '<input type="checkbox" id="fPause"' + (s.pauseAtStart !== false ? " checked" : "") + '><i></i></label>' +
@@ -627,10 +729,11 @@
       if (!t) return;
       closeSheet(); renderShows();
       if (isNew) {
-        toast(t.name + " added", { action: "Make Play go to the episode", duration: 6000, onAction: function () { openTeach(findShow(t.id)); } });
+        toast(t.name + " added", { action: "Make Play go to the episode", duration: 6000, onAction: function () { openGoToSheet(findShow(t.id)); } });
       }
     });
     on("fTeach", function () { var t = save(); if (!t) return; closeSheet(); renderShows(); openTeach(findShow(t.id)); });
+    on("fGoTo", function () { var t = save(); if (!t) return; closeSheet(); renderShows(); setTimeout(function () { openGoToSheet(findShow(t.id)); }, 250); });
     on("fLinkTest", async function () {
       var link = $("#fLink").value.trim();
       if (!/^https?:\/\//i.test(link)) { setMsg("fLinkMsg", "Paste a link that starts with https://", "bad"); return; }
@@ -753,7 +856,7 @@
     on("tUndo", function () { teach.steps.pop(); renderTeach(); });
     on("tSave", function () {
       var steps = teach.steps.slice();
-      updateShow(teach.showId, function (s) { s.steps = steps; });
+      updateShow(teach.showId, function (s) { s.steps = steps; s.mode = "steps"; });
       closeTeach(); renderShows();
       toast("Saved. Play now goes straight to " + show.name + ".", { duration: 4000 });
     });

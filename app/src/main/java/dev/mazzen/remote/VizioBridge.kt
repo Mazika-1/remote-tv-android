@@ -1,6 +1,9 @@
 package dev.mazzen.remote
 
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
@@ -279,6 +282,36 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Opens a link on the phone. Links like play.hbomax.com/... open straight
+     * in that streaming service's own app if it's installed.
+     */
+    @JavascriptInterface
+    fun openUrl(url: String): Boolean = try {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+        true
+    } catch (e: Exception) {
+        false
+    }
+
+    /** Text currently on the clipboard (for the "Paste" button). */
+    @JavascriptInterface
+    fun clipboardText(): String {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var text = ""
+        main.post {
+            try {
+                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                text = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(context)?.toString() ?: ""
+            } catch (e: Exception) {
+            }
+            latch.countDown()
+        }
+        latch.await(2, TimeUnit.SECONDS)
+        return text
     }
 
     @JavascriptInterface

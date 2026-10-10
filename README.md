@@ -23,19 +23,23 @@ open it on your phone and tap to install.
    run, and the episode is paused at the start. Tap ▶ on the show card
    when you're ready to watch.
 
-### Why steps and not a direct link?
+### Three ways Play can get to your episode
+
+Tap *Make Play go to the episode* on a show (or Edit → Change):
+
+- **Cast from your phone (most reliable).** Paste the show's share link
+  from the streaming app on your phone. Play turns on the TV and opens the
+  show in that phone app. You tap **Cast**, then **Play**. The streaming
+  service tracks your episode, so it's always right.
+- **Hands-free.** Record the button presses from the app's home screen to
+  your show once. Play repeats them on the TV and pauses at the start. It's
+  fully automatic, but a changed menu or slow loading can trip it up
+  (**Settings → My TV is slow** helps).
+- **Just open the app.**
 
 Vizio TVs let other apps *open* a streaming app, but HBO Max and most
-others don't take an "open this episode" command. Each show has an
-experimental *Try a direct link* option where you paste the episode's
-share link from the phone app and test whether the TV opens it. Netflix
-links are reported to work. Other apps don't publish a way to do this. The recorded steps work for any app.
-
-To keep steps reliable, the app waits for the TV to finish starting up
-(its home screen can otherwise kick the app out), checks the streaming
-app *stays* open for a few seconds and reopens it if it gets bounced, and waits a bit longer than you
-did between presses. If your TV is slow, turn on **Settings → My TV is
-slow**.
+others don't accept an "open this episode" command, which is why there's
+no fully automatic direct link.
 
 ### Automatic episode tracking
 

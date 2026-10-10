@@ -457,3 +457,16 @@ details.adv .input { height: 44px; font-size: 14px; }
 .tag.good { background: rgba(56,211,159,.15); color: var(--good); }
 .warn-txt { color: var(--warn); }
 .sheet .tv-list { margin-bottom: 4px; }
+
+/* v1.5: choose how Play gets to the show */
+.goto-opt {
+  display: block; width: 100%; text-align: left; margin-bottom: 10px;
+  padding: 14px 16px; border-radius: 16px; background: var(--surface-2); border: 1.5px solid transparent;
+}
+.goto-opt.sel { border-color: var(--accent); }
+.goto-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.goto-head b { font-size: 15px; }
+.goto-opt small { color: var(--text-2); font-size: 13px; line-height: 1.45; }
+.goto-opt small b { color: var(--text); }
+.tag { background: var(--surface-3); color: var(--text-2); }
+.goto-detail { margin: -2px 0 14px; padding: 4px 4px 0; }
