@@ -1,0 +1,49 @@
+name: Build & Release APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk RemoteTV-v1.0.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RemoteTV-apk
+          path: RemoteTV-v1.0.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0
+          name: RemoteTV v1.0
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: RemoteTV-v1.0.apk
+          body: |
+            Vizio one-button remote for Android.
+            Download `RemoteTV-v1.0.apk` on your phone and tap it to install
+            (allow installs from your browser/files app when prompted).

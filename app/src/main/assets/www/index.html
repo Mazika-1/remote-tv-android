@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>Remote</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">Remote</div>
+  <div class="tvstatus" id="tvStatusPill">TV not set up</div>
+</header>
+
+<main id="screens">
+
+  <!-- ============ QUICK LAUNCH ============ -->
+  <section class="screen" id="screen-launch">
+    <div class="screen-head">
+      <h1>Quick Launch</h1>
+      <p class="sub">One tap: turns on the TV and opens the show's app.</p>
+    </div>
+    <div id="launchList" class="show-grid"></div>
+    <div id="launchEmpty" class="empty-state hidden">
+      <p>No shows yet.</p>
+      <p class="sub">Add one in the <b>Shows</b> tab to get a Quick Launch button here.</p>
+    </div>
+  </section>
+
+  <!-- ============ SHOWS ============ -->
+  <section class="screen hidden" id="screen-shows">
+    <div class="screen-head">
+      <h1>Shows</h1>
+      <p class="sub">Keep track of which episode you're on for each show.</p>
+    </div>
+
+    <form id="showForm" class="card form-card">
+      <input type="text" id="showName" placeholder="Show name" required />
+      <select id="showService">
+        <option value="Paramount+">Paramount+</option>
+        <option value="Max">Max (HBO)</option>
+        <option value="Other">Other app</option>
+      </select>
+      <div class="row">
+        <label>Season <input type="number" id="showSeason" min="1" value="1" /></label>
+        <label>Episode <input type="number" id="showEpisode" min="1" value="1" /></label>
+      </div>
+      <button type="submit" class="btn primary">Add show</button>
+    </form>
+
+    <div id="showList" class="list"></div>
+  </section>
+
+  <!-- ============ REMOTE ============ -->
+  <section class="screen hidden" id="screen-remote">
+    <div class="screen-head">
+      <h1>Remote</h1>
+      <p class="sub">Normal remote controls.</p>
+    </div>
+
+    <div class="remote">
+      <div class="remote-row top-row">
+        <button class="rbtn power" data-key="pow_toggle">⏻</button>
+        <button class="rbtn" data-key="mute_toggle">🔇</button>
+        <button class="rbtn" data-key="input_next">IN</button>
+      </div>
+
+      <div class="dpad">
+        <button class="dbtn up" data-key="up">▲</button>
+        <button class="dbtn left" data-key="left">◀</button>
+        <button class="dbtn ok" data-key="ok">OK</button>
+        <button class="dbtn right" data-key="right">▶</button>
+        <button class="dbtn down" data-key="down">▼</button>
+      </div>
+
+      <div class="remote-row">
+        <button class="rbtn" data-key="back">BACK</button>
+        <button class="rbtn" data-key="home">HOME</button>
+        <button class="rbtn" data-key="menu">MENU</button>
+      </div>
+
+      <div class="remote-row">
+        <button class="rbtn wide" data-key="vol_down">VOL −</button>
+        <button class="rbtn wide" data-key="vol_up">VOL +</button>
+      </div>
+
+      <div class="remote-row">
+        <button class="rbtn" data-key="play">▶ Play</button>
+        <button class="rbtn" data-key="pause">⏸ Pause</button>
+        <button class="rbtn" data-key="exit">EXIT</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SETUP ============ -->
+  <section class="screen hidden" id="screen-setup">
+    <div class="screen-head">
+      <h1>Setup</h1>
+      <p class="sub">One-time TV pairing, plus app launch configs.</p>
+    </div>
+
+    <div class="card">
+      <h2>1. TV address</h2>
+      <p class="sub">Find this on your Vizio TV: Menu → Network → Network Connection → (your WiFi) → IP Address.</p>
+      <input type="text" id="tvIp" placeholder="e.g. 192.168.1.50" />
+      <button id="saveIpBtn" class="btn">Save IP</button>
+      <button id="testConnBtn" class="btn">Test connection</button>
+      <div id="testResult" class="status-line"></div>
+    </div>
+
+    <div class="card">
+      <h2>2. Pair with the TV</h2>
+      <p class="sub">Starts a pairing request — a PIN will appear on the TV screen.</p>
+      <button id="pairStartBtn" class="btn">Start pairing</button>
+      <div id="pinRow" class="row hidden">
+        <input type="text" id="pairPin" placeholder="PIN shown on TV" inputmode="numeric" />
+        <button id="pairSubmitBtn" class="btn primary">Submit PIN</button>
+      </div>
+      <div id="pairResult" class="status-line"></div>
+    </div>
+
+    <div class="card">
+      <h2>3. App launch configs</h2>
+      <p class="sub">
+        There's no universal way to tell a streaming app to jump to a specific
+        episode, so this app uses a simple trick: open the app on the TV once
+        (any screen), then capture it here. Quick Launch will reopen the app
+        to that same captured state. Capture again any time you want to
+        refresh it.
+      </p>
+      <select id="captureService">
+        <option value="Paramount+">Paramount+</option>
+        <option value="Max">Max (HBO)</option>
+        <option value="Other">Other app</option>
+      </select>
+      <button id="captureBtn" class="btn">Capture app currently open on TV</button>
+      <div id="captureResult" class="status-line"></div>
+      <div id="appConfigList" class="list small"></div>
+    </div>
+  </section>
+
+</main>
+
+<nav class="tabbar">
+  <button class="tab active" data-screen="launch"><span class="ic">▶</span>Quick Launch</button>
+  <button class="tab" data-screen="shows"><span class="ic">📺</span>Shows</button>
+  <button class="tab" data-screen="remote"><span class="ic">🎛</span>Remote</button>
+  <button class="tab" data-screen="setup"><span class="ic">⚙</span>Setup</button>
+</nav>
+
+<script src="app.js"></script>
+</body>
+</html>

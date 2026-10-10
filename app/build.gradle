@@ -1,0 +1,38 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'dev.mazzen.remote'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "dev.mazzen.remote"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+// Intentionally no external dependencies beyond the Android SDK itself
+// (no AndroidX, no third-party libraries) -- this keeps the build to
+// just the Android Gradle Plugin + platform tools, which Android Studio
+// already has set up on this machine.
+dependencies {}
