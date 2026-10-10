@@ -209,6 +209,24 @@
     return val && val.APP_ID != null ? val : null;
   }
   function sameApp(a, b) { return !!a && !!b && String(a.APP_ID) === String(b.APP_ID) && Number(a.NAME_SPACE) === Number(b.NAME_SPACE); }
+  /** The TV's own SmartCast home screen (what apps get bounced back to). */
+  function isHome(a) {
+    return !!a && (/scfs\/sctv/i.test(String(a.MESSAGE || "")) || (String(a.APP_ID) === "1" && Number(a.NAME_SPACE) === 4));
+  }
+  // Some apps report a different ID while running than the one used to open
+  // them. We learn that ID the first time and treat both as the same app.
+  function appKey(a) { return Number(a.NAME_SPACE) + ":" + String(a.APP_ID); }
+  function isApp(cur, app) {
+    if (!cur) return false;
+    if (sameApp(cur, app)) return true;
+    var aliases = getJSON("remotetv.appAliases", {})[appKey(app)] || [];
+    return aliases.indexOf(appKey(cur)) >= 0;
+  }
+  function learnAlias(app, cur) {
+    if (!cur || isHome(cur) || sameApp(cur, app)) return;
+    var all = getJSON("remotetv.appAliases", {}), k = appKey(app), list = all[k] || [];
+    if (list.indexOf(appKey(cur)) < 0) { list.push(appKey(cur)); all[k] = list; setJSON("remotetv.appAliases", all); }
+  }
 
   function currentApp(timeout) {
     return tvCall("GET", "/app/current", null, { timeout: timeout || 2500 }).then(readCurrentApp);
@@ -244,18 +262,20 @@
   }
 
   /**
-   * Opens an app fresh and makes sure it *stays* open: the TV must report it
-   * as the current app for 4 seconds in a row. If the TV bounces back to its
-   * home screen, it launches again (up to 3 tries).
+   * Opens an app fresh and makes sure it *stays* open. Success means the TV
+   * has left its own home screen and stayed out for 4 seconds. If it falls
+   * back to the home screen, the app is launched again (up to 3 tries).
    */
   async function openApp(app, label, status) {
-    if (sameApp(await currentApp(3000), app)) {
+    var before = await currentApp(3000);
+    if (isApp(before, app)) {
       // Already open somewhere inside it: leave first so recorded steps start from its home screen.
       status("Restarting " + label + "…");
       await sendKey("exit");
       for (var w = 0; w < 6; w++) {
         await delay(700);
-        if (!sameApp(await currentApp(), app)) break;
+        before = await currentApp();
+        if (!isApp(before, app)) break;
       }
       await delay(1500);
     }
@@ -264,22 +284,26 @@
       status(attempt === 1 ? "Opening " + label + "…" : "Opening " + label + " again (try " + attempt + ")…");
       res = await tvCall("PUT", "/app/launch", { VALUE: { APP_ID: app.APP_ID, NAME_SPACE: app.NAME_SPACE, MESSAGE: app.MESSAGE } });
       if (!res.ok) return res;
-      var since = 0, seen = false, bounced = false, start = Date.now();
+      var since = 0, inApp = false, bounced = false, unknown = 0, start = Date.now(), last = null;
       while (Date.now() - start < 15000) {
         await delay(700);
-        if (sameApp(await currentApp(), app)) {
-          if (!seen) { seen = true; since = Date.now(); }
-          if (Date.now() - since >= 4000) return res; // stayed open: good
-        } else if (seen) {
-          bounced = true; // it opened and then got kicked back out
+        var cur = await currentApp();
+        if (!cur) { unknown++; continue; }            // TV didn't say; don't guess
+        // Still showing whatever was on before the launch took effect.
+        if (!inApp && before && sameApp(cur, before) && !isApp(cur, app) && Date.now() - start < 3000) continue;
+        if (isApp(cur, app) || !isHome(cur)) {
+          if (!inApp) { inApp = true; since = Date.now(); }
+          last = cur;
+          if (Date.now() - since >= 4000) { learnAlias(app, last); return res; } // stayed open
+        } else if (inApp) {
+          bounced = true;                              // opened, then kicked back to the home screen
           break;
         }
       }
-      if (!seen && !bounced) {
-        // The TV never reported the app. Some TVs don't report it at all,
-        // so don't keep relaunching on top of a working app.
-        if (attempt >= 2) return res;
-      }
+      // Never saw it leave the home screen. If the TV isn't telling us what's
+      // on screen at all, trust the launch rather than relaunching on top of it.
+      if (!bounced && (!inApp && unknown > 5)) return res;
+      if (!bounced && attempt >= 2) return res;
       await delay(2000);
     }
     return { ok: false, status: 200, error: label + " kept closing straight after opening. Try again in a few seconds." };
