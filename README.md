@@ -29,10 +29,11 @@ Vizio TVs let other apps *open* a streaming app, but HBO Max and most
 others don't take an "open this episode" command. Each show has an
 experimental *Try a direct link* option where you paste the episode's
 share link from the phone app and test whether the TV opens it. Netflix
-links are known to work. The recorded steps work for any app.
+links are reported to work. Other apps don't publish a way to do this. The recorded steps work for any app.
 
-To keep steps reliable, the app always reopens the streaming app fresh,
-waits until the TV reports it has opened, and waits a bit longer than you
+To keep steps reliable, the app waits for the TV to finish starting up
+(its home screen can otherwise kick the app out), checks the streaming
+app *stays* open for a few seconds and reopens it if it gets bounced, and waits a bit longer than you
 did between presses. If your TV is slow, turn on **Settings → My TV is
 slow**.
 

@@ -210,6 +210,10 @@
   }
   function sameApp(a, b) { return !!a && !!b && String(a.APP_ID) === String(b.APP_ID) && Number(a.NAME_SPACE) === Number(b.NAME_SPACE); }
 
+  function currentApp(timeout) {
+    return tvCall("GET", "/app/current", null, { timeout: timeout || 2500 }).then(readCurrentApp);
+  }
+
   /** Turns the TV on if needed. Returns {ok, wasOff} or {ok:false, error}. */
   async function ensureOn(status) {
     var power = await tvCall("GET", "/state/device/power_mode", null, { timeout: 4000 });
@@ -224,27 +228,61 @@
       await delay(1000);
       if (readPowerOn(await tvCall("GET", "/state/device/power_mode", null, { timeout: 2000 }))) break;
     }
-    await delay(2500); // SmartCast home screen needs a moment before it takes app launches
+    // After waking, the TV's own home screen loads and grabs the screen, which
+    // kicks out any app opened too early. Wait until it reports the same
+    // current app twice in a row (i.e. it has settled), then a bit more.
+    status("Waiting for the TV to finish starting…");
+    var prev = null, settled = 0;
+    for (var j = 0; j < 15 && settled < 2; j++) {
+      await delay(1000);
+      var cur = await currentApp();
+      settled = cur && prev && sameApp(cur, prev) ? settled + 1 : 0;
+      prev = cur;
+    }
+    await delay(2000);
     return { ok: true, wasOff: true };
   }
 
-  /** Opens an app fresh, then waits until the TV reports it as the current app. */
+  /**
+   * Opens an app fresh and makes sure it *stays* open: the TV must report it
+   * as the current app for 4 seconds in a row. If the TV bounces back to its
+   * home screen, it launches again (up to 3 tries).
+   */
   async function openApp(app, label, status) {
-    var cur = readCurrentApp(await tvCall("GET", "/app/current", null, { timeout: 3000 }));
-    if (sameApp(cur, app)) {
+    if (sameApp(await currentApp(3000), app)) {
       // Already open somewhere inside it: leave first so recorded steps start from its home screen.
       status("Restarting " + label + "…");
       await sendKey("exit");
+      for (var w = 0; w < 6; w++) {
+        await delay(700);
+        if (!sameApp(await currentApp(), app)) break;
+      }
+      await delay(1500);
+    }
+    var res;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      status(attempt === 1 ? "Opening " + label + "…" : "Opening " + label + " again (try " + attempt + ")…");
+      res = await tvCall("PUT", "/app/launch", { VALUE: { APP_ID: app.APP_ID, NAME_SPACE: app.NAME_SPACE, MESSAGE: app.MESSAGE } });
+      if (!res.ok) return res;
+      var since = 0, seen = false, bounced = false, start = Date.now();
+      while (Date.now() - start < 15000) {
+        await delay(700);
+        if (sameApp(await currentApp(), app)) {
+          if (!seen) { seen = true; since = Date.now(); }
+          if (Date.now() - since >= 4000) return res; // stayed open: good
+        } else if (seen) {
+          bounced = true; // it opened and then got kicked back out
+          break;
+        }
+      }
+      if (!seen && !bounced) {
+        // The TV never reported the app. Some TVs don't report it at all,
+        // so don't keep relaunching on top of a working app.
+        if (attempt >= 2) return res;
+      }
       await delay(2000);
     }
-    status("Opening " + label + "…");
-    var res = await tvCall("PUT", "/app/launch", { VALUE: { APP_ID: app.APP_ID, NAME_SPACE: app.NAME_SPACE, MESSAGE: app.MESSAGE } });
-    if (!res.ok) return res;
-    for (var i = 0; i < 10; i++) {
-      await delay(800);
-      if (sameApp(readCurrentApp(await tvCall("GET", "/app/current", null, { timeout: 2000 })), app)) break;
-    }
-    return res;
+    return { ok: false, status: 200, error: label + " kept closing straight after opening. Try again in a few seconds." };
   }
 
   // =====================================================================
@@ -501,7 +539,7 @@
           '<label class="switch-row"><span><b>Pause it at the start</b><small>So it\'s cued up and waiting when you sit down</small></span>' +
             '<input type="checkbox" id="fPause"' + (s.pauseAtStart !== false ? " checked" : "") + '><i></i></label>' +
           '<details class="adv"' + (s.link ? " open" : "") + '><summary>Try a direct link (experimental)</summary>' +
-            '<p class="ri-sub">In the ' + esc(service(s.service).label) + ' phone app, open the episode, tap Share and copy the link, then paste it here. Some TV apps open the link directly and skip the steps. Many don\'t, so test it.</p>' +
+            '<p class="ri-sub">In the ' + esc(service(s.service).label) + ' phone app, open the episode, tap Share and copy the link, then paste it here. Netflix links are reported to work. HBO Max, Paramount+ and the rest don\'t publish a way to do this, so they probably won\'t, but testing takes seconds.</p>' +
             '<div style="display:flex;gap:8px;margin-top:8px"><input class="input" id="fLink" placeholder="https://…" value="' + esc(s.link || "") + '">' +
             '<button class="btn" id="fLinkTest">Test</button></div>' +
             '<div class="status-msg" id="fLinkMsg">' + (s.link ? (s.linkWorks ? "Works: Play uses this link." : "Not confirmed. Play uses your steps instead.") : "") + '</div>' +
