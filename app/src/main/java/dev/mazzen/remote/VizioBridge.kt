@@ -1,5 +1,7 @@
 package dev.mazzen.remote
 
+import android.content.Context
+import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
 import android.view.HapticFeedbackConstants
@@ -10,8 +12,12 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.SocketTimeoutException
 import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import java.net.Socket
@@ -40,7 +46,7 @@ import javax.net.ssl.X509TrustManager
  * All network work runs off the UI thread. JS calls the *Async methods with
  * a callback id, and the result comes back via window.__nativeCb(id, json).
  */
-class VizioBridge(private val webView: WebView) {
+class VizioBridge(private val context: Context, private val webView: WebView) {
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -127,9 +133,13 @@ class VizioBridge(private val webView: WebView) {
     }
 
     /**
-     * Scans the phone's local /24 network for anything listening on the
-     * SmartCast ports. Result:
-     *   {"ok":true,"subnet":"192.168.1","found":[{"ip":"192.168.1.40","port":7345,"name":"V505-J09"}]}
+     * Finds Vizio TVs on the WiFi. Two methods run together:
+     *  - a port scan of the phone's /24 network for the SmartCast ports
+     *    (this is what decides something is a Vizio TV), and
+     *  - SSDP/UPnP discovery, which gives the name you gave the TV in its
+     *    settings (e.g. "Living Room TV").
+     * Result:
+     *   {"ok":true,"subnet":"192.168.1","found":[{"ip":"192.168.1.40","port":7345,"name":"Living Room","model":"V505-J09"}]}
      */
     @JavascriptInterface
     fun scanAsync(cbId: String) {
@@ -141,27 +151,37 @@ class VizioBridge(private val webView: WebView) {
                 return@Thread
             }
 
-            val found = Collections.synchronizedList(mutableListOf<JSONObject>())
+            val ssdpNames = Collections.synchronizedMap(mutableMapOf<String, Pair<String, String>>())
+            val ssdp = Thread { ssdpDiscover(ssdpNames) }.apply { start() }
+
+            val open = Collections.synchronizedList(mutableListOf<Pair<String, Int>>())
             val pool = Executors.newFixedThreadPool(48)
             for (i in 1..254) {
                 val ip = "$prefix.$i"
                 pool.execute {
                     for (port in intArrayOf(7345, 9000)) {
-                        if (portOpen(ip, port)) {
-                            found.add(JSONObject()
-                                .put("ip", ip)
-                                .put("port", port)
-                                .put("name", deviceName("$ip:$port") ?: ""))
-                            break
-                        }
+                        if (portOpen(ip, port)) { open.add(ip to port); break }
                     }
                 }
             }
             pool.shutdown()
             pool.awaitTermination(30, TimeUnit.SECONDS)
+            ssdp.join(6000)
 
             val arr = JSONArray()
-            synchronized(found) { found.sortedBy { it.getString("ip").substringAfterLast('.').toInt() }.forEach { arr.put(it) } }
+            synchronized(open) { open.sortedBy { it.first.substringAfterLast('.').toInt() } }.forEach { (ip, port) ->
+                var (name, model) = ssdpNames[ip] ?: ("" to "")
+                if (name.isEmpty()) {
+                    castName(ip)?.let { name = it }
+                }
+                if (name.isEmpty() || model.isEmpty()) {
+                    deviceInfo("$ip:$port")?.let { (n, m) ->
+                        if (name.isEmpty()) name = n
+                        if (model.isEmpty()) model = m
+                    }
+                }
+                arr.put(JSONObject().put("ip", ip).put("port", port).put("name", name).put("model", model))
+            }
             deliver(cbId, JSONObject().put("ok", true).put("subnet", prefix).put("found", arr).toString())
         }.start()
     }
@@ -173,14 +193,75 @@ class VizioBridge(private val webView: WebView) {
         false
     }
 
-    /** Best effort: SmartCast TVs usually answer deviceinfo without pairing. */
-    private fun deviceName(host: String): String? = try {
-        val res = JSONObject(request(host, "GET", "/state/device/deviceinfo", "", "", 1500))
-        val body = res.optString("body", "")
-        Regex("\"(?:NAME|MODEL_NAME)\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+    /** Sends SSDP M-SEARCH and reads friendlyName/modelName from each device description. */
+    private fun ssdpDiscover(out: MutableMap<String, Pair<String, String>>) {
+        val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val lock = try { wifi?.createMulticastLock("remotetv-ssdp")?.apply { setReferenceCounted(false); acquire() } } catch (e: Exception) { null }
+        val locations = mutableMapOf<String, String>()
+        try {
+            DatagramSocket().use { sock ->
+                sock.soTimeout = 400
+                val group = InetAddress.getByName("239.255.255.250")
+                for (st in listOf("urn:dial-multiscreen-org:service:dial:1", "upnp:rootdevice", "ssdp:all")) {
+                    val msg = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: $st\r\n\r\n"
+                    val bytes = msg.toByteArray()
+                    sock.send(DatagramPacket(bytes, bytes.size, group, 1900))
+                }
+                val buf = ByteArray(4096)
+                val end = System.currentTimeMillis() + 3000
+                while (System.currentTimeMillis() < end) {
+                    try {
+                        val pkt = DatagramPacket(buf, buf.size)
+                        sock.receive(pkt)
+                        val ip = pkt.address.hostAddress ?: continue
+                        val text = String(pkt.data, 0, pkt.length)
+                        val loc = Regex("(?im)^location:\\s*(\\S+)").find(text)?.groupValues?.get(1) ?: continue
+                        // Prefer the DIAL description (has the TV's own name) over others.
+                        if (!locations.containsKey(ip) || text.contains("dial", ignoreCase = true)) locations[ip] = loc
+                    } catch (e: SocketTimeoutException) {
+                        // keep listening until the deadline
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // discovery is best effort
+        } finally {
+            try { lock?.release() } catch (e: Exception) {}
+        }
+        for ((ip, loc) in locations) {
+            val xml = httpGet(loc, 1500) ?: continue
+            val name = xmlTag(xml, "friendlyName") ?: continue
+            out[ip] = name to (xmlTag(xml, "modelName") ?: "")
+        }
+    }
+
+    /** Vizio TVs have Chromecast built in; its description carries the TV's name. */
+    private fun castName(ip: String): String? {
+        val xml = httpGet("http://$ip:8008/ssdp/device-desc.xml", 1200) ?: return null
+        return xmlTag(xml, "friendlyName")
+    }
+
+    private fun deviceInfo(host: String): Pair<String, String>? = try {
+        val body = JSONObject(request(host, "GET", "/state/device/deviceinfo", "", "", 1500)).optString("body", "")
+        val name = Regex("\"NAME\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1) ?: ""
+        val model = Regex("\"MODEL_NAME\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1) ?: ""
+        if (name.isEmpty() && model.isEmpty()) null else name to model
     } catch (e: Exception) {
         null
     }
+
+    private fun httpGet(url: String, timeout: Int): String? = try {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = timeout
+        conn.readTimeout = timeout
+        if (conn.responseCode in 200..299) conn.inputStream.bufferedReader().use { it.readText() } else null
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun xmlTag(xml: String, tag: String): String? =
+        Regex("<$tag>([^<]+)</$tag>").find(xml)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
+            ?.replace("&amp;", "&")?.replace("&apos;", "'")?.replace("&quot;", "\"")
 
     private fun localSubnetPrefix(): String? {
         return try {

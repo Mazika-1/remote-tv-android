@@ -9,32 +9,39 @@ open it on your phone and tap to install.
 
 ## How it works
 
-1. **Find your TV.** The first time you open the app, it searches your
-   WiFi for the TV. Then you type the PIN that appears on the TV screen.
-2. **Add a show.** Enter the name, pick the app (Paramount+, Max, Netflix…)
-   and the season and episode you're on.
-3. **Tap ▶.** The TV turns on and the app opens. The first time you use an
-   app, you'll be asked to open it on the TV once so this app knows which
-   one it is.
+1. **Pick your TV.** The app searches your WiFi and lists the Vizio TVs it
+   finds by name (e.g. "Living Room TV"). Tap one, then type the PIN shown
+   on the TV. You can pair several TVs and switch between them by tapping
+   the TV name at the top.
+2. **Add a show.** Enter its name and pick the app (HBO Max, Paramount+,
+   Netflix…). Popular apps work without any setup.
+3. **Teach Play the way to the episode (once).** Tap *Make Play go to the
+   episode*. The app opens the streaming app on the TV. Using the buttons
+   on your phone, pick the show from **Continue Watching** and start it.
+   Then tap Save.
+4. **Tap ▶.** The TV turns on, the app reopens fresh, your recorded steps
+   run, and the episode is paused at the start. Tap ▶ on the show card
+   when you're ready to watch.
 
-### What Play does (and doesn't) do
+### Why steps and not a direct link?
 
-Vizio TVs have no command to open a particular *episode* inside a
-streaming app. Play turns on the TV and opens the right app, and your show
-is usually first in its "Continue Watching" row. The season/episode on
-each card is a reminder for you.
+Vizio TVs let other apps *open* a streaming app, but HBO Max and most
+others don't take an "open this episode" command. Each show has an
+experimental *Try a direct link* option where you paste the episode's
+share link from the phone app and test whether the TV opens it. Netflix
+links are known to work. The recorded steps work for any app.
+
+To keep steps reliable, the app always reopens the streaming app fresh,
+waits until the TV reports it has opened, and waits a bit longer than you
+did between presses. If your TV is slow, turn on **Settings → My TV is
+slow**.
 
 ### Automatic episode tracking
 
-Each show can move to the next episode on its own:
-
-- **Every night:** +1 episode each morning.
-- **Only nights I watch:** +1 the morning after a night you tapped Play.
-- **Off:** use the − / + buttons yourself.
-
-**Next season** sets the episode back to 1 and adds 1 to the season. The
-day changes over at 4 AM, so a late-night episode still counts as that
-night. Every automatic change pops up a message with an **Undo** button.
+Each show can move to the next episode on its own: **every night**, **only
+nights you watch**, or **off**. **Next season** sets the episode back to 1
+and adds 1 to the season. The day changes over at 4 AM. Every automatic
+change pops up a message with an **Undo** button.
 
 ## Troubleshooting
 

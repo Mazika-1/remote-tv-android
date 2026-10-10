@@ -28,7 +28,7 @@ class MainActivity : Activity() {
 
         // VizioBridge is plain Kotlin making the network calls to the TV, so
         // none of the web page network restrictions apply to it.
-        webView.addJavascriptInterface(VizioBridge(webView), "VizioBridge")
+        webView.addJavascriptInterface(VizioBridge(this, webView), "VizioBridge")
 
         webView.loadUrl("file:///android_asset/www/index.html")
     }

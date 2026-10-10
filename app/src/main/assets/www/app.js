@@ -24,53 +24,66 @@
   function setJSON(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {} }
 
   // =====================================================================
-  // data
+  // streaming apps
+  // Launch codes are Vizio's own, as used by the pyvizio library (Home
+  // Assistant's Vizio integration). Linking an app from the TV overrides them.
   // =====================================================================
   var SERVICES = [
-    { id: "Paramount+", label: "Paramount+", short: "P+", color: "#0064ff" },
-    { id: "Max", label: "Max", short: "M", color: "#4b2bff" },
-    { id: "Netflix", label: "Netflix", short: "N", color: "#e50914" },
-    { id: "Hulu", label: "Hulu", short: "H", color: "#1ce783" },
-    { id: "Disney+", label: "Disney+", short: "D+", color: "#113ccf" },
-    { id: "Prime Video", label: "Prime Video", short: "PV", color: "#00a8e1" },
-    { id: "Peacock", label: "Peacock", short: "Pk", color: "#f5b700" },
-    { id: "YouTube", label: "YouTube", short: "YT", color: "#ff0033" },
-    { id: "Other", label: "Other", short: "•", color: "#6b7280" }
+    { id: "Max", label: "HBO Max", short: "M", color: "#4b2bff", app: { NAME_SPACE: 2, APP_ID: "128", MESSAGE: null } },
+    { id: "Paramount+", label: "Paramount+", short: "P+", color: "#0064ff", app: { NAME_SPACE: 2, APP_ID: "37", MESSAGE: null } },
+    { id: "Netflix", label: "Netflix", short: "N", color: "#e50914", app: { NAME_SPACE: 3, APP_ID: "1", MESSAGE: null } },
+    { id: "Hulu", label: "Hulu", short: "H", color: "#1ce783", app: { NAME_SPACE: 2, APP_ID: "3", MESSAGE: null } },
+    { id: "Disney+", label: "Disney+", short: "D+", color: "#113ccf", app: { NAME_SPACE: 2, APP_ID: "75", MESSAGE: null } },
+    { id: "Prime Video", label: "Prime Video", short: "PV", color: "#00a8e1", app: { NAME_SPACE: 2, APP_ID: "4", MESSAGE: null } },
+    { id: "Peacock", label: "Peacock", short: "Pk", color: "#f5b700", app: { NAME_SPACE: 2, APP_ID: "88", MESSAGE: null } },
+    { id: "YouTube", label: "YouTube", short: "YT", color: "#ff0033", app: { NAME_SPACE: 5, APP_ID: "1", MESSAGE: null } },
+    { id: "Other", label: "Other", short: "•", color: "#6b7280", app: null }
   ];
   function service(id) {
-    return SERVICES.find(function (s) { return s.id === id; }) || { id: id, label: id, short: "•", color: "#6b7280" };
+    return SERVICES.find(function (s) { return s.id === id; }) || { id: id, label: id, short: "•", color: "#6b7280", app: null };
   }
+  function getLinked() { return getJSON("remotetv.appConfigs", {}); }
+  function setLinked(a) { setJSON("remotetv.appConfigs", a); }
+  function appFor(serviceId) { return getLinked()[serviceId] || service(serviceId).app; }
 
-  function getTv() { return getJSON("remotetv.tvConfig", { ip: "", port: 0, authToken: "", paired: false, name: "" }); }
-  function setTv(c) { setJSON("remotetv.tvConfig", c); renderTvChip(); }
+  // =====================================================================
+  // TVs (several can be paired; one is active)
+  // =====================================================================
+  function getTvs() { return getJSON("remotetv.tvs", []); }
+  function setTvs(l) { setJSON("remotetv.tvs", l); renderTvChip(); }
+  function activeId() { return getJSON("remotetv.activeTv", null); }
+  function setActive(id) { setJSON("remotetv.activeTv", id); renderTvChip(); }
+  function activeTv() {
+    var tvs = getTvs(), id = activeId();
+    return tvs.find(function (t) { return t.id === id; }) || tvs[0] || null;
+  }
+  function updateTv(id, fn) {
+    var l = getTvs(), t = l.find(function (x) { return x.id === id; });
+    if (t) { fn(t); setTvs(l); }
+    return t;
+  }
+  function tvLabel(t) { return (t && (t.name || t.model)) || "Vizio TV"; }
+
+  // =====================================================================
+  // shows
+  // =====================================================================
   function getShows() { return getJSON("remotetv.shows", []); }
   function setShows(l) { setJSON("remotetv.shows", l); }
-  function getApps() { return getJSON("remotetv.appConfigs", {}); }
-  function setApps(a) { setJSON("remotetv.appConfigs", a); }
-
+  function findShow(id) { return getShows().find(function (s) { return s.id === id; }); }
   function updateShow(id, fn) {
-    var list = getShows();
-    var s = list.find(function (x) { return x.id === id; });
+    var list = getShows(), s = list.find(function (x) { return x.id === id; });
     if (s) { fn(s); setShows(list); }
     return s;
   }
 
-  // =====================================================================
-  // nightly auto-advance
-  // A "TV day" starts at 4 AM, so watching at 1 AM still counts as that night.
-  // =====================================================================
+  // ---------- nightly auto-advance (a "TV day" starts at 4 AM) ----------
   var DAY_START_HOUR = 4;
   function tvDay(date) {
     var t = new Date((date || new Date()).getTime() - DAY_START_HOUR * 3600e3);
     return Math.floor(Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) / 864e5);
   }
-
-  /** Bumps episodes for nights that have passed. Returns a list of changes for the undo toast. */
   function applyAutoAdvance() {
-    var today = tvDay();
-    var list = getShows();
-    var changes = [];
-    var dirty = false;
+    var today = tvDay(), list = getShows(), changes = [], dirty = false;
     list.forEach(function (s) {
       if (!s.auto || s.auto === "off") return;
       if (s.lastDay == null) { s.lastDay = today; dirty = true; return; }
@@ -83,35 +96,24 @@
         bump = (s.playedDays || []).filter(function (d) { return d >= last && d < today; }).length;
         s.playedDays = (s.playedDays || []).filter(function (d) { return d >= today; });
       }
-      if (bump > 0) {
-        changes.push({ id: s.id, name: s.name, from: s.episode, to: s.episode + bump });
-        s.episode += bump;
-      }
+      if (bump > 0) { changes.push({ id: s.id, name: s.name, from: s.episode, to: s.episode + bump }); s.episode += bump; }
       s.lastDay = today;
       dirty = true;
     });
     if (dirty) setShows(list);
     return changes;
   }
-
   function checkAutoAdvance() {
     var changes = applyAutoAdvance();
     renderShows();
     if (!changes.length) return;
-    var msg = changes.length === 1
-      ? changes[0].name + " moved to episode " + changes[0].to
-      : changes.length + " shows moved to their next episode";
-    toast(msg, {
-      action: "Undo",
-      duration: 6000,
+    toast(changes.length === 1 ? changes[0].name + " moved to episode " + changes[0].to
+      : changes.length + " shows moved to their next episode", {
+      action: "Undo", duration: 6000,
       onAction: function () {
         var list = getShows();
-        changes.forEach(function (c) {
-          var s = list.find(function (x) { return x.id === c.id; });
-          if (s) s.episode = c.from;
-        });
-        setShows(list);
-        renderShows();
+        changes.forEach(function (c) { var s = list.find(function (x) { return x.id === c.id; }); if (s) s.episode = c.from; });
+        setShows(list); renderShows();
       }
     });
   }
@@ -153,17 +155,21 @@
 
   var PORTS = [7345, 9000]; // newer firmware uses 7345, older 9000
 
+  /** opts.tv: call a specific TV ({ip, port, authToken}) instead of the active one. */
   async function tvCall(method, path, body, opts) {
     opts = opts || {};
-    var cfg = getTv();
-    if (!cfg.ip) return { ok: false, error: "No TV set up yet.", noTv: true };
-    var ports = cfg.port ? [cfg.port] : PORTS.slice();
-    if (cfg.port && !opts.noFallback) PORTS.forEach(function (p) { if (p !== cfg.port) ports.push(p); });
+    var tv = opts.tv || activeTv();
+    if (!tv || !tv.ip) return { ok: false, error: "No TV set up yet.", noTv: true };
+    var ports = tv.port ? [tv.port] : [];
+    PORTS.forEach(function (p) { if (ports.indexOf(p) < 0) ports.push(p); });
     var res;
     for (var i = 0; i < ports.length; i++) {
-      res = normalize(await rawRequest(cfg.ip + ":" + ports[i], method, path, body, cfg.authToken, opts.timeout));
+      res = normalize(await rawRequest(tv.ip + ":" + ports[i], method, path, body, tv.authToken, opts.timeout));
       if (res.status) { // reached something
-        if (ports[i] !== cfg.port) { var c = getTv(); c.port = ports[i]; setTv(c); }
+        if (ports[i] !== tv.port) {
+          tv.port = ports[i];
+          if (tv.id) updateTv(tv.id, function (t) { t.port = ports[i]; });
+        }
         return res;
       }
     }
@@ -172,8 +178,8 @@
 
   function describeError(res) {
     if (res.noTv) return "Set up your TV first.";
-    if (res.vizioResult && /AUTH/.test(res.vizioResult)) return "The TV doesn't recognise this phone any more. Pair again in Settings.";
-    if (!res.status) return "Couldn't reach the TV. Make sure it's plugged in and your phone is on the same WiFi.";
+    if (res.vizioResult && /AUTH/.test(res.vizioResult)) return "The TV doesn't recognise this phone any more. Pair it again in Settings.";
+    if (!res.status) return "Couldn't reach " + tvLabel(activeTv()) + ". Check it's plugged in and your phone is on the same WiFi.";
     return res.error || ("TV replied with error " + res.status);
   }
 
@@ -185,6 +191,7 @@
     input_next: [7, 1], exit: [9, 0],
     play: [2, 3], pause: [2, 2], ffwd: [2, 0], rewind: [2, 1]
   };
+  var KEY_LABELS = { up: "↑", down: "↓", left: "←", right: "→", ok: "OK", back: "Back", play: "Play", pause: "Pause", exit: "Exit", home: "Home" };
   function sendKey(name) {
     var k = KEYS[name];
     return tvCall("PUT", "/key_command/", { KEYLIST: [{ CODESET: k[0], CODE: k[1], ACTION: "KEYPRESS" }] });
@@ -195,6 +202,49 @@
     var item = (res.json.ITEMS && res.json.ITEMS[0]) || res.json.ITEM;
     if (!item) return null;
     return Number(item.VALUE) !== 0;
+  }
+  function readCurrentApp(res) {
+    var item = res.ok && res.json && res.json.ITEM;
+    var val = item && (item.VALUE || item);
+    return val && val.APP_ID != null ? val : null;
+  }
+  function sameApp(a, b) { return !!a && !!b && String(a.APP_ID) === String(b.APP_ID) && Number(a.NAME_SPACE) === Number(b.NAME_SPACE); }
+
+  /** Turns the TV on if needed. Returns {ok, wasOff} or {ok:false, error}. */
+  async function ensureOn(status) {
+    var power = await tvCall("GET", "/state/device/power_mode", null, { timeout: 4000 });
+    if (!power.status) {
+      return { ok: false, error: "Couldn't reach " + tvLabel(activeTv()) + ". If it's fully off, turn on Quick Start on the TV (Menu → System → Power Mode) so the phone can wake it." };
+    }
+    if (power.vizioResult && /AUTH/.test(power.vizioResult)) return { ok: false, error: describeError(power) };
+    if (readPowerOn(power) !== false) return { ok: true, wasOff: false };
+    status("Turning on the TV…");
+    await sendKey("pow_on");
+    for (var i = 0; i < 20; i++) {
+      await delay(1000);
+      if (readPowerOn(await tvCall("GET", "/state/device/power_mode", null, { timeout: 2000 }))) break;
+    }
+    await delay(2500); // SmartCast home screen needs a moment before it takes app launches
+    return { ok: true, wasOff: true };
+  }
+
+  /** Opens an app fresh, then waits until the TV reports it as the current app. */
+  async function openApp(app, label, status) {
+    var cur = readCurrentApp(await tvCall("GET", "/app/current", null, { timeout: 3000 }));
+    if (sameApp(cur, app)) {
+      // Already open somewhere inside it: leave first so recorded steps start from its home screen.
+      status("Restarting " + label + "…");
+      await sendKey("exit");
+      await delay(2000);
+    }
+    status("Opening " + label + "…");
+    var res = await tvCall("PUT", "/app/launch", { VALUE: { APP_ID: app.APP_ID, NAME_SPACE: app.NAME_SPACE, MESSAGE: app.MESSAGE } });
+    if (!res.ok) return res;
+    for (var i = 0; i < 10; i++) {
+      await delay(800);
+      if (sameApp(readCurrentApp(await tvCall("GET", "/app/current", null, { timeout: 2000 })), app)) break;
+    }
+    return res;
   }
 
   // =====================================================================
@@ -213,6 +263,7 @@
     el.classList.add("show");
     document.body.classList.add("toast-on");
     clearTimeout(toastTimer);
+    if (opts.sticky) return;
     toastTimer = setTimeout(hideToast, opts.duration || 3200);
   }
 
@@ -232,18 +283,17 @@
   }
   $$(".tab").forEach(function (b) { b.addEventListener("click", function () { haptic(); showScreen(b.dataset.screen); }); });
   $("#tvChip").addEventListener("click", function () {
-    var cfg = getTv();
-    if (!cfg.paired) openOnboarding(cfg.ip ? "pair" : "find"); else showScreen("settings");
+    haptic();
+    if (!getTvs().length) openOnboarding("find"); else openTvPicker();
   });
   document.addEventListener("click", function (e) {
-    var a = e.target.closest("[data-action='add-show']");
-    if (a) { haptic(); openShowSheet(null); }
+    if (e.target.closest("[data-action='add-show']")) { haptic(); openShowSheet(null); }
   });
 
   function renderTvChip() {
-    var cfg = getTv(), chip = $("#tvChip");
-    chip.className = "tv-chip " + (!cfg.ip ? "" : cfg.paired ? "ok" : "warn");
-    $("#tvChipText").textContent = !cfg.ip ? "Set up TV" : cfg.paired ? (cfg.name || "TV connected") : "Finish pairing";
+    var tv = activeTv(), chip = $("#tvChip");
+    chip.className = "tv-chip " + (!tv ? "" : tv.paired ? "ok" : "warn");
+    $("#tvChipText").textContent = !tv ? "Set up TV" : tvLabel(tv) + (tv.paired ? "" : " · not paired");
   }
 
   // =====================================================================
@@ -254,6 +304,7 @@
     $("#sheetBody").innerHTML = html;
     $("#scrim").classList.remove("hidden");
     var s = $("#sheet");
+    s.scrollTop = 0;
     s.setAttribute("aria-hidden", "false");
     requestAnimationFrame(function () { s.classList.add("open"); });
     sheetOnClose = onClose || null;
@@ -270,24 +321,32 @@
     return true;
   }
   $("#scrim").addEventListener("click", closeSheet);
+  function on(id, fn) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener("click", function (e) { haptic(); fn(e); });
+  }
 
   // =====================================================================
   // WATCH
   // =====================================================================
   function renderShows() {
-    var shows = getShows();
-    var wrap = $("#showList");
+    var shows = getShows(), wrap = $("#showList");
     $("#watchEmpty").classList.toggle("hidden", shows.length > 0);
     $("#fab").classList.toggle("hidden", current !== "watch" || shows.length === 0);
-    var apps = getApps();
 
     wrap.innerHTML = shows.map(function (s, i) {
       var svc = service(s.service);
-      var linked = !!apps[s.service];
-      var status = s.auto === "nightly" ? icon("moon") + "Next ep. tomorrow"
-        : s.auto === "watched" ? icon("moon") + "+1 after nights you watch" : "";
+      var hasSteps = (s.steps && s.steps.length) || (s.link && s.linkWorks);
+      var isReady = ready && ready.showId === s.id;
+      var autoTxt = s.auto === "nightly" ? "Next ep. tomorrow" : s.auto === "watched" ? "+1 after nights you watch" : "";
+      var foot = isReady
+        ? '<div class="ready-bar"><span class="rec-dot ready"></span><span class="ready-txt">' + (ready.paused ? "Paused at the start on your TV" : "Playing on your TV") + '</span>' +
+            '<button class="mini-btn" data-act="tv-pause" aria-label="Pause">' + icon("pause") + '</button>' +
+            '<button class="mini-btn primary" data-act="tv-play" aria-label="Play">' + icon("play") + '</button></div>'
+        : hasSteps ? '<span class="go-direct">' + icon("check") + 'Goes straight to your show' + (s.pauseAtStart !== false ? ", paused" : "") + '</span>'
+        : '<button class="teach-link" data-act="teach">' + icon("play") + 'Make Play go to the episode</button>';
       return '' +
-        '<article class="show" data-id="' + s.id + '" style="--brand:' + svc.color + ';animation-delay:' + (i * 40) + 'ms">' +
+        '<article class="show' + (isReady ? " is-ready" : "") + '" data-id="' + s.id + '" style="--brand:' + svc.color + ';animation-delay:' + (i * 40) + 'ms">' +
           '<div class="show-top">' +
             '<div class="show-info">' +
               '<div class="service-tag"><i></i>' + esc(svc.label) + '</div>' +
@@ -299,9 +358,9 @@
             '<div class="upnext">' +
               '<div class="upnext-label">You\'re on</div>' +
               '<div class="upnext-val"><b>S' + s.season + '<span>·</span>E' + s.episode + '</b></div>' +
-              (status ? '<div class="auto-badge">' + status + '</div>' : '') +
+              (autoTxt ? '<div class="auto-badge">' + icon("moon") + autoTxt + '</div>' : '') +
             '</div>' +
-            '<button class="play-btn" data-act="play" aria-label="Open ' + esc(svc.label) + ' on TV">' + icon("play") + '</button>' +
+            '<button class="play-btn" data-act="' + (isReady && ready.paused ? "tv-play" : "play") + '" aria-label="Play ' + esc(s.name) + '">' + icon("play") + '</button>' +
           '</div>' +
           '<div class="show-bar">' +
             '<div class="stepper">' +
@@ -310,8 +369,8 @@
               '<button data-act="ep+" aria-label="Next episode">' + icon("plus") + '</button>' +
             '</div>' +
             '<button class="chip-btn" data-act="season">Next season</button>' +
-            '<div class="show-status">' + (linked ? "Opens " + esc(svc.label) : "Tap ▶ to link app") + '</div>' +
           '</div>' +
+          '<div class="show-foot">' + foot + '</div>' +
         '</article>';
     }).join("");
   }
@@ -320,12 +379,15 @@
     var btn = e.target.closest("[data-act]");
     if (!btn) return;
     var id = btn.closest(".show").dataset.id;
-    var show = getShows().find(function (s) { return s.id === id; });
+    var show = findShow(id);
     if (!show) return;
     haptic();
     switch (btn.dataset.act) {
       case "play": playShow(show, btn); break;
       case "edit": openShowSheet(show); break;
+      case "teach": openTeach(show); break;
+      case "tv-play": sendKey("play"); ready.paused = false; renderShows(); break;
+      case "tv-pause": sendKey("pause"); ready.paused = true; renderShows(); break;
       case "ep+": updateShow(id, function (s) { s.episode += 1; }); renderShows(); break;
       case "ep-": updateShow(id, function (s) { s.episode = Math.max(1, s.episode - 1); }); renderShows(); break;
       case "season":
@@ -340,55 +402,111 @@
     }
   });
 
+  var playing = null; // { stop: bool }
+  var ready = null;   // { showId, paused } once a show is cued up on the TV
+
+  function stepFactor() { return getJSON("remotetv.patient", false) ? 1.6 : 1.15; }
+
+  /** Turns a pasted share link into what the TV app expects (Netflix has a known format). */
+  function linkMessage(link) {
+    var m = /netflix\.com\/(?:[a-z-]+\/)?(?:watch|title)\/(\d+)/i.exec(link);
+    if (m) return "m=https://api-global.netflix.com/catalog/titles/movie/" + m[1] + "&source_type=4";
+    return link;
+  }
+
   async function playShow(show, btn) {
-    var cfg = getTv();
-    if (!cfg.paired) { openOnboarding(cfg.ip ? "pair" : "find"); return; }
-    var app = getApps()[show.service];
+    var tv = activeTv();
+    if (!tv) { openOnboarding("find"); return; }
+    if (!tv.paired) { openOnboarding("find"); return; }
+    var app = appFor(show.service);
     if (!app) { openLinkSheet(show.service, function () { playShow(show, btn); }); return; }
-    if (btn.classList.contains("busy")) return;
+    if (playing) return;
 
     var svc = service(show.service);
+    var run = playing = { stop: false };
+    var status = function (t) { toast(t, { sticky: true, action: "Stop", onAction: function () { run.stop = true; } }); };
     btn.classList.add("busy");
     try {
-      var power = await tvCall("GET", "/state/device/power_mode", null, { timeout: 4000 });
-      if (!power.status) {
-        toast("Couldn't reach the TV. If it's fully off, turn on Quick Start: TV Menu → System → Power Mode.", { bad: true, duration: 6000 });
+      var power = await ensureOn(status);
+      if (!power.ok) { toast(power.error, { bad: true, duration: 7000 }); return; }
+      if (run.stop) return;
+
+      var useLink = show.link && show.linkWorks;
+      var res = await openApp(useLink ? Object.assign({}, app, { MESSAGE: linkMessage(show.link) }) : app, svc.label, status);
+      if (!res.ok) {
+        toast("Couldn't open " + svc.label + ": " + describeError(res), { bad: true, duration: 5000 });
+        if (res.status && !getLinked()[show.service]) openLinkSheet(show.service, function () { playShow(show, btn); });
         return;
       }
-      if (readPowerOn(power) === false) {
-        toast("Turning on the TV…");
-        await sendKey("pow_on");
-        await delay(5000);
+
+      var steps = useLink ? [] : (show.steps || []);
+      if (steps.length || useLink) {
+        var f = stepFactor();
+        for (var i = 0; i < steps.length; i++) {
+          if (run.stop) { toast("Stopped"); return; }
+          status("Going to " + show.name + "… (" + (i + 1) + "/" + steps.length + ")");
+          var wait = Math.min(25000, Math.max(500, steps[i].wait * f + 250));
+          if (i === 0 && power.wasOff) wait += 2500; // apps load slower right after the TV wakes
+          await delay(wait);
+          if (run.stop) { toast("Stopped"); return; }
+          await sendKey(steps[i].key);
+        }
+        if (show.pauseAtStart !== false) {
+          status("Pausing at the start…");
+          await delay(useLink ? 9000 : 2500); // let the video actually begin
+          if (run.stop) { toast("Stopped"); return; }
+          await sendKey("pause");
+          ready = { showId: show.id, paused: true };
+          toast(show.name + " is ready on the TV. Tap ▶ when you're settled.", { duration: 4000 });
+        } else {
+          ready = { showId: show.id, paused: false };
+          toast("Enjoy " + show.name + "!", { duration: 3000 });
+        }
+        renderShows();
+      } else {
+        toast(svc.label + " is open. Tip: tap \"Make Play go to the episode\" to skip the menus next time.", { duration: 5000 });
       }
-      toast("Opening " + svc.label + "…");
-      var res = await tvCall("PUT", "/app/launch", { VALUE: { APP_ID: app.APP_ID, NAME_SPACE: app.NAME_SPACE, MESSAGE: app.MESSAGE } });
-      if (!res.ok) { toast("Couldn't open " + svc.label + ": " + describeError(res), { bad: true, duration: 5000 }); return; }
       updateShow(show.id, function (s) {
         var d = tvDay();
         s.playedDays = (s.playedDays || []).filter(function (x) { return x !== d; }).concat([d]);
       });
-      toast(svc.label + " is opening. Pick S" + show.season + " E" + show.episode + " from Continue Watching.", { duration: 4500 });
     } finally {
       btn.classList.remove("busy");
+      playing = null;
     }
   }
 
   // ---------- add / edit show ----------
   function openShowSheet(show) {
     var isNew = !show;
-    var s = show || { name: "", service: "Paramount+", season: 1, episode: 1, auto: "nightly" };
-    var sel = s.service;
-    var auto = s.auto || "off";
+    var s = show || { name: "", service: "Max", season: 1, episode: 1, auto: "nightly" };
+    var sel = s.service, auto = s.auto || "off";
+    var nSteps = (s.steps || []).length;
 
     var body = openSheet(
       '<h2>' + (isNew ? "Add a show" : "Edit show") + '</h2>' +
       '<p class="lead">' + (isNew ? "Play will turn on the TV and open its app." : "") + '</p>' +
-      '<div class="field"><label>Show name</label><input class="input" id="fName" placeholder="e.g. Tulsa King" value="' + esc(s.name) + '" maxlength="60"></div>' +
+      '<div class="field"><label>Show name</label><input class="input" id="fName" placeholder="e.g. The Big Bang Theory" value="' + esc(s.name) + '" maxlength="60"></div>' +
       '<div class="field"><label>Watch it on</label><div class="service-grid" id="fSvc">' +
         SERVICES.map(function (x) {
           return '<button class="service-opt' + (x.id === sel ? " sel" : "") + '" data-svc="' + esc(x.id) + '" style="--brand:' + x.color + '">' + esc(x.label) + '</button>';
         }).join("") +
       '</div></div>' +
+      (isNew ? '' :
+        '<div class="field"><label>Go straight to the episode</label><div class="card inset">' +
+          '<div class="row-item"><div class="ri-main"><div class="ri-title">' + (nSteps ? "Taught: " + nSteps + " steps" : "Not set up") + '</div>' +
+          '<div class="ri-sub">' + (nSteps ? "After opening the app, Play repeats your steps to start the show." : "Teach Play the button presses that get from the app to your show.") + '</div></div>' +
+          '<button class="pill-btn accent" id="fTeach">' + (nSteps ? "Re-teach" : "Teach") + '</button></div>' +
+          (nSteps ? '<button class="link-btn" id="fClearSteps" style="padding:8px 0 0">Remove steps</button>' : '') +
+          '<label class="switch-row"><span><b>Pause it at the start</b><small>So it\'s cued up and waiting when you sit down</small></span>' +
+            '<input type="checkbox" id="fPause"' + (s.pauseAtStart !== false ? " checked" : "") + '><i></i></label>' +
+          '<details class="adv"' + (s.link ? " open" : "") + '><summary>Try a direct link (experimental)</summary>' +
+            '<p class="ri-sub">In the ' + esc(service(s.service).label) + ' phone app, open the episode, tap Share and copy the link, then paste it here. Some TV apps open the link directly and skip the steps. Many don\'t, so test it.</p>' +
+            '<div style="display:flex;gap:8px;margin-top:8px"><input class="input" id="fLink" placeholder="https://…" value="' + esc(s.link || "") + '">' +
+            '<button class="btn" id="fLinkTest">Test</button></div>' +
+            '<div class="status-msg" id="fLinkMsg">' + (s.link ? (s.linkWorks ? "Works: Play uses this link." : "Not confirmed. Play uses your steps instead.") : "") + '</div>' +
+          '</details>' +
+        '</div></div>') +
       '<div class="field"><label>You\'re on</label><div class="two">' +
         numField("fSeason", "Season", s.season) + numField("fEp", "Episode", s.episode) +
       '</div></div>' +
@@ -418,42 +536,75 @@
     wireNumFields(body);
     if (isNew) setTimeout(function () { $("#fName").focus(); }, 350);
 
-    $("#fSave").addEventListener("click", function () {
+    function save() {
       var name = $("#fName").value.trim();
-      if (!name) { $("#fName").focus(); toast("Give the show a name"); return; }
+      if (!name) { $("#fName").focus(); toast("Give the show a name"); return null; }
       var season = Math.max(1, parseInt($("#fSeason").value, 10) || 1);
       var ep = Math.max(1, parseInt($("#fEp").value, 10) || 1);
-      var list = getShows();
+      var list = getShows(), t;
       if (isNew) {
-        list.push({ id: uid(), name: name, service: sel, season: season, episode: ep, auto: auto, lastDay: tvDay(), playedDays: [] });
+        t = { id: uid(), name: name, service: sel, season: season, episode: ep, auto: auto, lastDay: tvDay(), playedDays: [], steps: [], pauseAtStart: true, link: "", linkWorks: false };
+        list.push(t);
       } else {
-        var t = list.find(function (x) { return x.id === show.id; });
+        t = list.find(function (x) { return x.id === show.id; });
         if (t) {
           if (t.auto !== auto) t.lastDay = tvDay();
+          if (t.service !== sel) { t.steps = []; t.link = ""; t.linkWorks = false; } // these belong to the old app
+          var pz = $("#fPause"); if (pz) t.pauseAtStart = pz.checked;
+          var lk = $("#fLink");
+          if (lk && lk.value.trim() !== (t.link || "")) { t.link = lk.value.trim(); t.linkWorks = false; }
           t.name = name; t.service = sel; t.season = season; t.episode = ep; t.auto = auto;
         }
       }
       setShows(list);
-      closeSheet();
-      renderShows();
-      haptic();
-      if (isNew) toast(name + " added");
-    });
-
-    if (!isNew) {
-      $("#fDelete").addEventListener("click", function () {
-        var list = getShows();
-        var idx = list.findIndex(function (x) { return x.id === show.id; });
-        var removed = list.splice(idx, 1)[0];
-        setShows(list);
-        closeSheet();
-        renderShows();
-        toast(removed.name + " deleted", {
-          action: "Undo",
-          onAction: function () { var l = getShows(); l.splice(idx, 0, removed); setShows(l); renderShows(); }
-        });
-      });
+      return t;
     }
+
+    on("fSave", function () {
+      var t = save();
+      if (!t) return;
+      closeSheet(); renderShows();
+      if (isNew) {
+        toast(t.name + " added", { action: "Make Play go to the episode", duration: 6000, onAction: function () { openTeach(findShow(t.id)); } });
+      }
+    });
+    on("fTeach", function () { var t = save(); if (!t) return; closeSheet(); renderShows(); openTeach(findShow(t.id)); });
+    on("fLinkTest", async function () {
+      var link = $("#fLink").value.trim();
+      if (!/^https?:\/\//i.test(link)) { setMsg("fLinkMsg", "Paste a link that starts with https://", "bad"); return; }
+      var app = appFor(sel);
+      if (!app) { setMsg("fLinkMsg", "Link the app first (Settings → Streaming apps).", "bad"); return; }
+      setMsg("fLinkMsg", "Sending it to the TV… watch the screen.");
+      var power = await ensureOn(function (t) { setMsg("fLinkMsg", t); });
+      if (!power.ok) { setMsg("fLinkMsg", power.error, "bad"); return; }
+      var res = await openApp(Object.assign({}, app, { MESSAGE: linkMessage(link) }), service(sel).label, function (t) { setMsg("fLinkMsg", t); });
+      if (!res.ok) { setMsg("fLinkMsg", "The TV refused the link: " + describeError(res), "bad"); return; }
+      var m = $("#fLinkMsg");
+      m.className = "status-msg";
+      m.innerHTML = 'Did the TV go straight to the episode? <span class="yn"><button class="pill-btn accent" id="fLinkYes">Yes</button><button class="pill-btn" id="fLinkNo">No</button></span>';
+      on("fLinkYes", function () {
+        var t = save(); if (!t) return;
+        updateShow(t.id, function (x) { x.link = link; x.linkWorks = true; });
+        setMsg("fLinkMsg", "Saved. Play will use this link.", "ok");
+        renderShows();
+      });
+      on("fLinkNo", function () {
+        var t = save(); if (!t) return;
+        updateShow(t.id, function (x) { x.link = link; x.linkWorks = false; });
+        setMsg("fLinkMsg", "OK, this app doesn't take links. Teach the steps instead.", "bad");
+      });
+    });
+    on("fClearSteps", function () { updateShow(show.id, function (x) { x.steps = []; }); closeSheet(); renderShows(); toast("Steps removed"); });
+    on("fDelete", function () {
+      var list = getShows();
+      var idx = list.findIndex(function (x) { return x.id === show.id; });
+      var removed = list.splice(idx, 1)[0];
+      setShows(list); closeSheet(); renderShows();
+      toast(removed.name + " deleted", {
+        action: "Undo",
+        onAction: function () { var l = getShows(); l.splice(idx, 0, removed); setShows(l); renderShows(); }
+      });
+    });
   }
 
   function numField(id, label, val) {
@@ -476,42 +627,150 @@
     return '<button class="seg-opt' + (val === cur ? " sel" : "") + '" data-val="' + val + '"><span class="radio"></span><span><b>' + title + '</b><small>' + sub + '</small></span></button>';
   }
 
-  // ---------- link a streaming app ----------
+  // =====================================================================
+  // TEACH: record the button presses from the app's home screen to the show
+  // =====================================================================
+  var teach = null; // { showId, phase: 'intro'|'opening'|'rec', steps: [], last: ms, busy }
+
+  function openTeach(show) {
+    if (!show) return;
+    var tv = activeTv();
+    if (!tv || !tv.paired) { openOnboarding("find"); return; }
+    teach = { showId: show.id, phase: "intro", steps: [], last: 0 };
+    $("#teach").classList.remove("hidden");
+    renderTeach();
+  }
+  function closeTeach() {
+    teach = null;
+    $("#teach").classList.add("hidden");
+  }
+
+  function renderTeach() {
+    var show = findShow(teach.showId);
+    var svc = service(show.service);
+    var el = $("#teach");
+    var html = '<div class="ob-top"><span class="teach-title">' + esc(show.name) + '</span><button class="link-btn" id="tClose">Cancel</button></div>';
+
+    if (teach.phase === "intro") {
+      html +=
+        '<div class="ob-body">' +
+          '<div class="ob-art">' + icon("play") + '</div>' +
+          '<h1>Teach Play the way to your show</h1>' +
+          '<p class="lead">You only do this once. The app opens ' + esc(svc.label) + ' on the TV. Then use the buttons here, while watching the TV, to get to ' + esc(show.name) + ' and start it playing. Next time, Play repeats exactly that and pauses it at the start.</p>' +
+          '<div class="note">' + icon("check") + '<span>Choose your show from <b>Continue Watching</b> (usually the first row) instead of searching. That way it always opens at the episode you\'re up to. Take your time: the app waits as long as you did, plus a bit extra.</span></div>' +
+          '<div class="ob-actions" style="margin-top:22px"><button class="btn primary big block" id="tStart">Open ' + esc(svc.label) + ' and start</button></div>' +
+        '</div>';
+    } else {
+      var rec = teach.phase === "rec";
+      html +=
+        '<div class="teach-status">' + (rec ? '<span class="rec-dot"></span>Recording. Wait for each screen to load before you press.' : '<div class="spinner"></div><span id="tStatus">Opening ' + esc(svc.label) + '…</span>') + '</div>' +
+        '<div class="step-strip" id="tSteps">' + stepsHtml(teach.steps) + '</div>' +
+        '<div class="teach-pad' + (rec ? '' : ' disabled') + '">' +
+          '<div class="dpad small">' +
+            '<button class="d up" data-tkey="up">' + icon("chev-up") + '</button>' +
+            '<button class="d right" data-tkey="right">' + icon("chev-up") + '</button>' +
+            '<button class="d down" data-tkey="down">' + icon("chev-up") + '</button>' +
+            '<button class="d left" data-tkey="left">' + icon("chev-up") + '</button>' +
+            '<button class="d ok" data-tkey="ok">OK</button>' +
+          '</div>' +
+          '<div class="r-row">' +
+            '<button class="rkey" data-tkey="back">' + icon("back") + '<small>Back</small></button>' +
+            '<button class="rkey" data-tkey="play">' + icon("play") + '<small>Play</small></button>' +
+          '</div>' +
+        '</div>' +
+        '<div class="ob-actions teach-actions">' +
+          '<button class="btn primary big block" id="tSave"' + (rec && teach.steps.length ? '' : ' disabled') + '>' + icon("check") + 'It\'s playing. Save these steps</button>' +
+          '<div class="btn-row"><button class="btn" id="tUndo"' + (teach.steps.length ? '' : ' disabled') + '>Undo last</button><button class="btn" id="tRestart">Start over</button></div>' +
+        '</div>';
+    }
+    el.innerHTML = html;
+
+    on("tClose", closeTeach);
+    on("tStart", startTeachRun);
+    on("tRestart", startTeachRun);
+    on("tUndo", function () { teach.steps.pop(); renderTeach(); });
+    on("tSave", function () {
+      var steps = teach.steps.slice();
+      updateShow(teach.showId, function (s) { s.steps = steps; });
+      closeTeach(); renderShows();
+      toast("Saved. Play now goes straight to " + show.name + ".", { duration: 4000 });
+    });
+    $$("[data-tkey]", el).forEach(function (b) {
+      b.addEventListener("pointerdown", function (e) {
+        e.preventDefault();
+        if (!teach || teach.phase !== "rec") return;
+        haptic();
+        var now = Date.now();
+        teach.steps.push({ key: b.dataset.tkey, wait: now - teach.last });
+        teach.last = now;
+        sendKey(b.dataset.tkey).then(function (res) { if (!res.ok) toast(describeError(res), { bad: true }); });
+        $("#tSteps").innerHTML = stepsHtml(teach.steps);
+        $("#tSteps").scrollLeft = 1e6;
+        $("#tSave").disabled = false; $("#tUndo").disabled = false;
+      });
+    });
+  }
+
+  function stepsHtml(steps) {
+    if (!steps.length) return '<span class="step-empty">Your button presses will show up here</span>';
+    return steps.map(function (s) {
+      return '<span class="wait">' + (s.wait / 1000).toFixed(1) + 's</span><span class="step">' + esc(KEY_LABELS[s.key] || s.key) + '</span>';
+    }).join("");
+  }
+
+  async function startTeachRun() {
+    var show = findShow(teach.showId), svc = service(show.service);
+    var app = appFor(show.service);
+    if (!app) { closeTeach(); openLinkSheet(show.service, function () { openTeach(findShow(show.id)); }); return; }
+    var mine = teach;
+    teach.phase = "opening"; teach.steps = [];
+    renderTeach();
+    var status = function (t) { var s = $("#tStatus"); if (s) s.textContent = t; };
+    var power = await ensureOn(status);
+    if (teach !== mine) return;
+    if (!power.ok) { toast(power.error, { bad: true, duration: 7000 }); teach.phase = "intro"; renderTeach(); return; }
+    var res = await openApp(app, svc.label, status);
+    if (teach !== mine) return;
+    if (!res.ok) { toast("Couldn't open " + svc.label + ": " + describeError(res), { bad: true }); teach.phase = "intro"; renderTeach(); return; }
+    teach.phase = "rec";
+    teach.last = Date.now();
+    renderTeach();
+  }
+
+  // ---------- link a streaming app (for "Other", or if the built-in code fails) ----------
   function openLinkSheet(serviceId, then) {
     var svc = service(serviceId);
-    var body = openSheet(
+    openSheet(
       '<h2>Link ' + esc(svc.label) + '</h2>' +
       '<p class="lead">This only needs doing once. It shows the app which streaming app to open.</p>' +
       '<ol class="steps">' +
         '<li><span>Using your normal TV remote, <b>open ' + esc(svc.label) + '</b> on the TV.</span></li>' +
         '<li><span>When it\'s on screen, tap the button below.</span></li>' +
       '</ol>' +
-      '<div class="note">Play opens ' + esc(svc.label) + '. Your show is usually first in its Continue Watching row.</div>' +
       '<div class="status-msg" id="linkMsg"></div>' +
       '<div class="sheet-actions">' +
         '<button class="btn primary big block" id="linkGo">' + icon("link") + esc(svc.label) + ' is open — link it</button>' +
+        (getLinked()[serviceId] ? '<button class="btn ghost block" id="linkReset">Use the built-in code instead</button>' : '') +
         '<button class="btn ghost block" id="linkCancel">Not now</button>' +
       '</div>'
     );
-    $("#linkCancel").addEventListener("click", closeSheet);
-    $("#linkGo").addEventListener("click", async function () {
-      var b = this;
+    on("linkCancel", closeSheet);
+    on("linkReset", function () { var l = getLinked(); delete l[serviceId]; setLinked(l); closeSheet(); renderSettings(); toast("Using the built-in code for " + svc.label); });
+    on("linkGo", async function () {
+      var b = $("#linkGo");
       b.disabled = true;
       setMsg("linkMsg", "Checking what's open on the TV…");
       var res = await tvCall("GET", "/app/current", null);
       b.disabled = false;
-      var item = res.ok && res.json && res.json.ITEM;
-      var val = item && (item.VALUE || item);
-      if (!val || val.APP_ID == null) {
+      var val = readCurrentApp(res);
+      if (!val) {
         setMsg("linkMsg", res.ok ? "No app seems to be open. Open " + svc.label + " on the TV and try again." : describeError(res), "bad");
         return;
       }
-      var apps = getApps();
-      apps[serviceId] = { APP_ID: val.APP_ID, NAME_SPACE: val.NAME_SPACE, MESSAGE: val.MESSAGE != null ? val.MESSAGE : null };
-      setApps(apps);
-      haptic();
-      closeSheet();
-      renderShows();
+      var l = getLinked();
+      l[serviceId] = { APP_ID: val.APP_ID, NAME_SPACE: val.NAME_SPACE, MESSAGE: val.MESSAGE != null ? val.MESSAGE : null };
+      setLinked(l);
+      closeSheet(); renderShows();
       if (current === "settings") renderSettings();
       toast(svc.label + " linked");
       if (then) then();
@@ -536,12 +795,11 @@
       setTimeout(function () { el.classList.remove("flash-bad"); }, 400);
       if (Date.now() - lastKeyErr > 4000) {
         lastKeyErr = Date.now();
-        var cfg = getTv();
-        toast(!cfg.paired ? "Set up your TV first (tap the chip at the top)." : describeError(res), { bad: true });
+        var tv = activeTv();
+        toast(!tv || !tv.paired ? "Set up your TV first (tap the button at the top)." : describeError(res), { bad: true });
       }
     }
   }
-
   $$("[data-key]").forEach(function (el) {
     var repeatTimer, startTimer;
     function stop() { clearTimeout(startTimer); clearInterval(repeatTimer); }
@@ -560,77 +818,141 @@
   });
 
   // =====================================================================
+  // TV picker + management
+  // =====================================================================
+  function tvRow(t, active, withCheck) {
+    return '<button class="tv-row' + (active ? " active" : "") + '" data-tv="' + t.id + '">' +
+      '<div class="ri-icon">' + icon("tv") + '</div>' +
+      '<div class="ri-main"><div class="ri-title">' + esc(tvLabel(t)) + '</div>' +
+      '<div class="ri-sub">' + esc([t.name && t.model ? t.model : "", t.ip].filter(Boolean).join(" · ")) + (t.paired ? "" : ' · <span class="warn-txt">not paired</span>') + '</div></div>' +
+      (withCheck ? '<span class="check">' + (active ? icon("check") : "") + '</span>' : '<span class="chev">›</span>') +
+    '</button>';
+  }
+
+  function openTvPicker() {
+    var tvs = getTvs(), cur = activeTv();
+    var body = openSheet(
+      '<h2>Your TVs</h2><p class="lead">Play and the remote control the TV you pick here.</p>' +
+      '<div class="tv-list">' + tvs.map(function (t) { return tvRow(t, cur && t.id === cur.id, true); }).join("") + '</div>' +
+      '<div class="sheet-actions">' +
+        '<button class="btn block" id="pAdd">' + icon("plus") + 'Add another TV</button>' +
+        '<button class="btn ghost block" id="pManage">Rename or remove TVs</button>' +
+      '</div>'
+    );
+    $$("[data-tv]", body).forEach(function (b) {
+      b.addEventListener("click", function () {
+        haptic();
+        var t = getTvs().find(function (x) { return x.id === b.dataset.tv; });
+        if (!t.paired) { closeSheet(); setActive(t.id); pairTv(t); return; }
+        setActive(t.id); closeSheet(); toast("Now controlling " + tvLabel(t));
+      });
+    });
+    on("pAdd", function () { closeSheet(); openOnboarding("find"); });
+    on("pManage", function () { closeSheet(); showScreen("settings"); });
+  }
+
+  function openTvSheet(id) {
+    var t = getTvs().find(function (x) { return x.id === id; });
+    if (!t) return;
+    var isActive = activeTv() && activeTv().id === id;
+    openSheet(
+      '<h2>' + esc(tvLabel(t)) + '</h2><p class="lead">' + esc([t.model, t.ip].filter(Boolean).join(" · ")) + '</p>' +
+      '<div class="field"><label>Name</label><input class="input" id="tvName" value="' + esc(t.name || "") + '" placeholder="e.g. Living Room TV" maxlength="40"></div>' +
+      '<div class="status-msg" id="tvMsg"></div>' +
+      '<div class="sheet-actions">' +
+        (isActive ? '' : '<button class="btn primary block" id="tvUse">Use this TV</button>') +
+        '<button class="btn block" id="tvTest">Test connection</button>' +
+        '<button class="btn block" id="tvPair">' + (t.paired ? "Pair again" : "Pair") + '</button>' +
+        '<button class="btn danger block" id="tvRemove">Remove this TV</button>' +
+      '</div>',
+      function () {
+        var n = ($("#tvName") || {}).value;
+        if (n != null && n.trim() !== (t.name || "")) { updateTv(id, function (x) { x.name = n.trim(); }); renderSettings(); }
+      }
+    );
+    on("tvUse", function () { setActive(id); closeSheet(); toast("Now controlling " + tvLabel(t)); });
+    on("tvTest", async function () {
+      setMsg("tvMsg", "Checking…");
+      var res = await tvCall("GET", "/state/device/power_mode", null, { tv: t });
+      if (!res.status) return setMsg("tvMsg", "Couldn't reach it. Check it's plugged in and on the same WiFi.", "bad");
+      if (res.vizioResult && /AUTH/.test(res.vizioResult)) return setMsg("tvMsg", "Reached the TV, but it needs pairing again.", "bad");
+      setMsg("tvMsg", "Connected. The TV is " + (readPowerOn(res) === false ? "in standby." : "on."), "ok");
+    });
+    on("tvPair", function () { closeSheet(); pairTv(t); });
+    on("tvRemove", function () {
+      var l = getTvs().filter(function (x) { return x.id !== id; });
+      setTvs(l);
+      if (activeId() === id) setActive(l[0] ? l[0].id : null);
+      sheetOnClose = null;
+      closeSheet(); renderSettings();
+      toast(tvLabel(t) + " removed");
+    });
+  }
+
+  // =====================================================================
   // SETTINGS
   // =====================================================================
+  var patient = $("#patientToggle");
+  patient.checked = getJSON("remotetv.patient", false);
+  patient.addEventListener("change", function () { haptic(); setJSON("remotetv.patient", patient.checked); });
+
   function renderSettings() {
-    var cfg = getTv();
-    var tvCard = $("#tvCard");
-    var state = !cfg.ip ? "Not set up" : cfg.paired ? "Paired · " + cfg.ip : "Not paired yet · " + cfg.ip;
-    tvCard.innerHTML =
-      '<div class="tv-hero"><div class="ri-icon">' + icon("tv") + '</div><div class="ri-main">' +
-        '<div class="ri-title">' + esc(cfg.name || "Vizio TV") + '</div>' +
-        '<div class="ri-sub' + (cfg.paired ? " good" : "") + '">' + esc(state) + '</div></div></div>' +
-      '<div class="btn-row">' +
-        (cfg.paired
-          ? '<button class="btn" id="sTest">Test connection</button><button class="btn" id="sRepair">Pair again</button>'
-          : '<button class="btn primary" id="sSetup">' + (cfg.ip ? "Finish pairing" : "Set up TV") + '</button>') +
-      '</div>' +
-      (cfg.ip ? '<div class="btn-row" style="margin-top:10px"><button class="btn ghost" id="sChange">Use a different TV</button></div>' : '') +
-      '<div class="status-msg" id="sMsg"></div>';
+    var tvs = getTvs(), cur = activeTv();
+    $("#tvCard").innerHTML =
+      (tvs.length
+        ? '<div class="tv-list">' + tvs.map(function (t) { return tvRow(t, cur && t.id === cur.id, false); }).join("") + '</div>'
+        : '<div class="row-item"><div class="ri-main"><div class="ri-sub">No TV set up yet.</div></div></div>') +
+      '<div class="btn-row" style="margin-top:12px"><button class="btn' + (tvs.length ? "" : " primary") + '" id="sAdd">' + icon("plus") + (tvs.length ? "Add another TV" : "Set up TV") + '</button></div>';
+    $$("[data-tv]", $("#tvCard")).forEach(function (b) { b.addEventListener("click", function () { haptic(); openTvSheet(b.dataset.tv); }); });
+    on("sAdd", function () { openOnboarding("find"); });
 
-    var on = function (id, fn) { var el = document.getElementById(id); if (el) el.addEventListener("click", function () { haptic(); fn(); }); };
-    on("sSetup", function () { openOnboarding(cfg.ip ? "pair" : "find"); });
-    on("sRepair", function () { openOnboarding("pair"); });
-    on("sChange", function () { openOnboarding("find"); });
-    on("sTest", async function () {
-      setMsg("sMsg", "Checking…");
-      var res = await tvCall("GET", "/state/device/power_mode", null);
-      if (!res.status) return setMsg("sMsg", describeError(res), "bad");
-      var p = readPowerOn(res);
-      setMsg("sMsg", "Connected. The TV is " + (p === false ? "in standby." : "on."), "ok");
-    });
-
-    var apps = getApps();
-    var used = {};
+    var linked = getLinked(), used = {};
     getShows().forEach(function (s) { used[s.service] = true; });
-    var ids = SERVICES.map(function (s) { return s.id; }).filter(function (id) { return used[id] || apps[id]; });
+    var ids = SERVICES.map(function (s) { return s.id; }).filter(function (id) { return used[id] || linked[id]; });
     if (!ids.length) {
       $("#appList").innerHTML = '<div class="row-item"><div class="ri-main"><div class="ri-sub">Apps show up here once you add a show.</div></div></div>';
       return;
     }
     $("#appList").innerHTML = ids.map(function (id) {
-      var svc = service(id), ok = !!apps[id];
+      var svc = service(id), isLinked = !!linked[id], ok = isLinked || !!svc.app;
       return '<div class="row-item"><div class="ri-icon" style="background:' + svc.color + '">' + esc(svc.short) + '</div>' +
         '<div class="ri-main"><div class="ri-title">' + esc(svc.label) + '</div>' +
-        '<div class="ri-sub' + (ok ? " good" : "") + '">' + (ok ? "Linked" : "Not linked yet") + '</div></div>' +
+        '<div class="ri-sub' + (ok ? " good" : "") + '">' + (isLinked ? "Linked from your TV" : ok ? "Ready" : "Needs linking") + '</div></div>' +
         '<button class="pill-btn' + (ok ? "" : " accent") + '" data-link="' + esc(id) + '">' + (ok ? "Re-link" : "Link") + '</button></div>';
     }).join("");
     $$("[data-link]", $("#appList")).forEach(function (b) {
       b.addEventListener("click", function () {
         haptic();
-        if (!getTv().paired) { openOnboarding("find"); return; }
+        var tv = activeTv();
+        if (!tv || !tv.paired) { openOnboarding("find"); return; }
         openLinkSheet(b.dataset.link);
       });
     });
   }
 
   // =====================================================================
-  // ONBOARDING (find TV -> pair)
+  // ONBOARDING: find TVs -> pick one -> pair -> name it
   // =====================================================================
-  var ob = { step: "welcome", found: null, scanning: false, pair: null };
+  var ob = { step: "welcome", found: null, scanning: false, pair: null, target: null };
   var OB_ORDER = ["welcome", "find", "pair", "done"];
 
   function openOnboarding(step) {
     ob.step = step || "welcome";
     $("#onboard").classList.remove("hidden");
     renderOnboarding();
+    if (ob.step === "find" && !ob.scanning) startScan();
   }
   function closeOnboarding() {
     setJSON("remotetv.onboarded", true);
     $("#onboard").classList.add("hidden");
-    renderTvChip();
-    renderShows();
+    ob.pair = null;
+    renderTvChip(); renderShows();
     if (current === "settings") renderSettings();
+  }
+  function pairTv(t) {
+    ob.target = { ip: t.ip, port: t.port, name: t.name, model: t.model, id: t.id };
+    ob.pair = null;
+    openOnboarding("pair");
   }
 
   function renderOnboarding() {
@@ -639,40 +961,45 @@
     var dots = '<div class="ob-dots">' + [0, 1, 2].map(function (i) { return '<i class="' + (i === Math.min(idx, 2) ? "on" : "") + '"></i>'; }).join("") + '</div>';
     var skip = ob.step !== "done" ? '<button class="link-btn" id="obSkip">' + (ob.step === "welcome" ? "Skip" : "Close") + '</button>' : '<span></span>';
     var html = '<div class="ob-top">' + dots + skip + '</div><div class="ob-body">';
+    var tvs = getTvs();
 
     if (ob.step === "welcome") {
       html +=
         '<div class="ob-art">' + icon("play") + '</div>' +
-        '<h1>One tap to start your show</h1>' +
-        '<p class="lead">This app turns on your Vizio TV and opens the right streaming app. First, let\'s connect to your TV. It takes about a minute.</p>' +
+        '<h1>From TV off to your show in one tap</h1>' +
+        '<p class="lead">This app turns on your Vizio TV, opens the streaming app and goes to your show. First, let\'s connect to your TV.</p>' +
         '<div class="ob-actions"><button class="btn primary big block" id="obNext">Get started</button></div>';
     } else if (ob.step === "find") {
       html +=
         '<div class="ob-art">' + icon("search") + '</div>' +
-        '<h1>Find your TV</h1>' +
-        '<p class="lead">Make sure the TV is on and your phone is on the same WiFi.</p>';
+        '<h1>Pick your TV</h1>' +
+        '<p class="lead">Turn the TV on and make sure your phone is on the same WiFi.</p>';
       if (ob.scanning) {
         html += '<div class="scanning"><div class="spinner"></div>Looking for TVs on your WiFi…</div>';
       } else if (ob.found && ob.found.length) {
         html += '<div class="found-list">' + ob.found.map(function (f, i) {
+          var known = tvs.find(function (t) { return t.ip === f.ip; });
           return '<button class="found" data-found="' + i + '"><div class="ri-icon">' + icon("tv") + '</div><div class="ri-main">' +
-            '<div class="ri-title">' + esc(f.name || "Vizio TV") + '</div><div class="ri-sub">' + esc(f.ip) + '</div></div></button>';
+            '<div class="ri-title">' + esc((known && known.name) || f.name || f.model || "Vizio TV") + '</div>' +
+            '<div class="ri-sub">' + esc([f.name && f.model ? f.model : "", f.ip].filter(Boolean).join(" · ")) + '</div></div>' +
+            (known && known.paired ? '<span class="tag good">Paired</span>' : '<span class="chev">›</span>') + '</button>';
         }).join("") + '</div>';
       } else if (ob.found) {
         html += '<div class="note" style="margin-bottom:18px">No TV found. Check the TV is on and try again, or type its IP address. You\'ll find it on the TV under Menu → Network → Network Connection.</div>';
       }
       html +=
         '<div class="ob-actions">' +
-          (ob.scanning ? '' : '<button class="btn ' + (ob.found && ob.found.length ? "" : "primary ") + 'big block" id="obScan">' + icon("search") + (ob.found ? "Search again" : "Search for my TV") + '</button>') +
+          (ob.scanning ? '' : '<button class="btn ' + (ob.found && ob.found.length ? "" : "primary ") + 'big block" id="obScan">' + icon("search") + (ob.found ? "Search again" : "Search for TVs") + '</button>') +
           '<details style="margin-top:6px"><summary class="link-btn" style="list-style:none;text-align:center">Enter IP address instead</summary>' +
-            '<div style="display:flex;gap:10px;margin-top:10px"><input class="input" id="obIp" inputmode="decimal" placeholder="192.168.1.50" value="' + esc(getTv().ip) + '">' +
+            '<div style="display:flex;gap:10px;margin-top:10px"><input class="input" id="obIp" inputmode="decimal" placeholder="192.168.1.50">' +
             '<button class="btn primary" id="obIpGo">Next</button></div></details>' +
         '</div>';
     } else if (ob.step === "pair") {
+      var tn = ob.target ? (ob.target.name || ob.target.model || ob.target.ip) : "your TV";
       html +=
         '<div class="ob-art">' + icon("link") + '</div>' +
-        '<h1>Enter the PIN on your TV</h1>' +
-        '<p class="lead" id="obPairLead">Asking the TV for a PIN…</p>' +
+        '<h1>Enter the PIN</h1>' +
+        '<p class="lead" id="obPairLead">Asking ' + esc(tn) + ' for a PIN…</p>' +
         '<input class="pin-input" id="obPin" inputmode="numeric" maxlength="6" placeholder="····" autocomplete="one-time-code">' +
         '<div class="status-msg" id="obMsg"></div>' +
         '<div class="ob-actions" style="margin-top:18px">' +
@@ -680,36 +1007,43 @@
           '<button class="link-btn" id="obRetry">No PIN on the TV? Try again</button>' +
         '</div>';
     } else if (ob.step === "done") {
+      var nt = activeTv();
       html +=
         '<div class="ob-art" style="background:linear-gradient(135deg,#38d39f,#2bb3c0)">' + icon("check") + '</div>' +
-        '<h1>You\'re connected</h1>' +
-        '<p class="lead">Now add the shows you\'re watching. Each one gets a Play button that turns on the TV and opens its app.</p>' +
-        '<div class="ob-actions"><button class="btn primary big block" id="obDone">' + (getShows().length ? "Done" : "Add my first show") + '</button></div>';
+        '<h1>Paired!</h1>' +
+        '<p class="lead">Give this TV a name so you can tell your TVs apart.</p>' +
+        '<input class="input" id="obName" value="' + esc((nt && nt.name) || "") + '" placeholder="e.g. Living Room TV" maxlength="40" style="margin-bottom:18px">' +
+        '<div class="ob-actions"><button class="btn primary big block" id="obDone">' + (getShows().length ? "Done" : "Next: add a show") + '</button></div>';
     }
     html += '</div>';
     el.innerHTML = html;
 
-    var on = function (id, fn) { var b = document.getElementById(id); if (b) b.addEventListener("click", function () { haptic(); fn(); }); };
     on("obSkip", closeOnboarding);
     on("obNext", function () { ob.step = "find"; renderOnboarding(); if (!ob.found) startScan(); });
     on("obScan", startScan);
     on("obIpGo", function () {
       var ip = $("#obIp").value.trim();
       if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) { toast("That doesn't look like an IP address"); return; }
-      chooseTv({ ip: ip, port: 0, name: "" });
+      chooseFound({ ip: ip, port: 0, name: "", model: "" });
     });
     $$("[data-found]", el).forEach(function (b) {
-      b.addEventListener("click", function () { haptic(); chooseTv(ob.found[Number(b.dataset.found)]); });
+      b.addEventListener("click", function () { haptic(); chooseFound(ob.found[Number(b.dataset.found)]); });
     });
     on("obPair", submitPin);
     on("obRetry", startPairing);
-    on("obDone", function () { var add = !getShows().length; closeOnboarding(); if (add) openShowSheet(null); });
+    on("obDone", function () {
+      var n = $("#obName").value.trim(), t = activeTv();
+      if (t && n) updateTv(t.id, function (x) { x.name = n; });
+      var add = !getShows().length;
+      closeOnboarding();
+      if (add) openShowSheet(null);
+    });
 
     var pin = $("#obPin");
     if (pin) {
       pin.addEventListener("keydown", function (e) { if (e.key === "Enter") submitPin(); });
       if (!ob.pair) startPairing();
-      else $("#obPairLead").textContent = "A PIN should be showing on your TV screen.";
+      else $("#obPairLead").textContent = "A PIN is showing on the TV screen.";
     }
   }
 
@@ -721,19 +1055,27 @@
       ob.scanning = false;
       ob.found = (res.ok && res.found) || [];
       if (!res.ok) toast(res.error || "Search failed", { bad: true });
-      if (ob.step === "find") {
-        if (ob.found.length === 1) { chooseTv(ob.found[0]); return; }
-        renderOnboarding();
-      }
+      // Remember any newer name/IP info for TVs we already know.
+      var l = getTvs(), dirty = false;
+      ob.found.forEach(function (f) {
+        var k = l.find(function (t) { return t.ip === f.ip; });
+        if (k && !k.model && f.model) { k.model = f.model; dirty = true; }
+      });
+      if (dirty) setTvs(l);
+      if (ob.step === "find") renderOnboarding();
     };
     VizioBridge.scanAsync(id);
   }
 
-  function chooseTv(f) {
-    var c = getTv();
-    if (c.ip !== f.ip) { c.authToken = ""; c.paired = false; }
-    c.ip = f.ip; c.port = f.port || 0; c.name = f.name || c.name || "";
-    setTv(c);
+  function chooseFound(f) {
+    var known = getTvs().find(function (t) { return t.ip === f.ip; });
+    if (known && known.paired) {
+      setActive(known.id);
+      closeOnboarding();
+      toast("Now controlling " + tvLabel(known));
+      return;
+    }
+    ob.target = { ip: f.ip, port: f.port || 0, name: (known && known.name) || f.name || "", model: f.model || "", id: known && known.id };
     ob.pair = null;
     ob.step = "pair";
     renderOnboarding();
@@ -742,18 +1084,20 @@
   async function startPairing() {
     ob.pair = null;
     var lead = $("#obPairLead");
-    if (lead) lead.textContent = "Asking the TV for a PIN…";
     setMsg("obMsg", "");
+    if (!ob.target) { ob.step = "find"; renderOnboarding(); return; }
     var deviceId = "remotetv-" + uid();
-    var res = await tvCall("PUT", "/pairing/start", { DEVICE_NAME: "Remote app", DEVICE_ID: deviceId });
+    var target = { ip: ob.target.ip, port: ob.target.port };
+    var res = await tvCall("PUT", "/pairing/start", { DEVICE_NAME: "Remote app", DEVICE_ID: deviceId }, { tv: target });
     if (ob.step !== "pair") return;
     if (!res.ok || !res.json || !res.json.ITEM) {
       if (lead) lead.textContent = "The TV didn't respond.";
-      setMsg("obMsg", describeError(res) + (res.status ? "" : "\nIs the TV on? You can go back and pick a different TV."), "bad");
+      setMsg("obMsg", (res.status ? (res.error || "Error " + res.status) : "Couldn't reach the TV.") + "\nIs it on? You can go back and pick a different TV.", "bad");
       return;
     }
+    ob.target.port = target.port;
     ob.pair = { deviceId: deviceId, token: res.json.ITEM.PAIRING_REQ_TOKEN, challenge: res.json.ITEM.CHALLENGE_TYPE || 1 };
-    if (lead) lead.textContent = "A PIN is now showing on your TV screen.";
+    if (lead) lead.textContent = "A PIN is now showing on the TV screen.";
     var pin = $("#obPin"); if (pin) pin.focus();
   }
 
@@ -766,16 +1110,19 @@
     var res = await tvCall("PUT", "/pairing/pair", {
       DEVICE_ID: ob.pair.deviceId, CHALLENGE_TYPE: ob.pair.challenge,
       RESPONSE_VALUE: pin, PAIRING_REQ_TOKEN: ob.pair.token
-    });
+    }, { tv: { ip: ob.target.ip, port: ob.target.port } });
     b.disabled = false;
     var token = res.ok && res.json && res.json.ITEM && res.json.ITEM.AUTH_TOKEN;
-    if (!token) {
-      setMsg("obMsg", "That PIN didn't work. Check it, or tap Try again for a new one.", "bad");
-      return;
-    }
-    var c = getTv();
-    c.deviceId = ob.pair.deviceId; c.authToken = token; c.paired = true;
-    setTv(c);
+    if (!token) { setMsg("obMsg", "That PIN didn't work. Check it, or tap Try again for a new one.", "bad"); return; }
+
+    var l = getTvs(), t = ob.target.id && l.find(function (x) { return x.id === ob.target.id; });
+    if (!t) t = l.find(function (x) { return x.ip === ob.target.ip; });
+    if (!t) { t = { id: uid() }; l.push(t); }
+    t.ip = ob.target.ip; t.port = ob.target.port || 0;
+    t.name = t.name || ob.target.name || ""; t.model = t.model || ob.target.model || "";
+    t.deviceId = ob.pair.deviceId; t.authToken = token; t.paired = true;
+    setTvs(l);
+    setActive(t.id);
     ob.pair = null;
     haptic();
     ob.step = "done";
@@ -787,6 +1134,7 @@
   // =====================================================================
   window.onAndroidBack = function () {
     if (closeSheet()) return true;
+    if (teach) { closeTeach(); return true; }
     if (!$("#onboard").classList.contains("hidden")) {
       var i = OB_ORDER.indexOf(ob.step);
       if (i > 0 && ob.step !== "done") { ob.step = OB_ORDER[i - 1]; renderOnboarding(); }
@@ -802,13 +1150,19 @@
   // =====================================================================
   // boot
   // =====================================================================
-  // Older versions stored shows without auto-advance info.
   (function migrate() {
+    // v1.0/1.1 stored a single TV.
+    var old = getJSON("remotetv.tvConfig", null);
+    if (old && old.ip && !getTvs().length) {
+      var t = { id: uid(), ip: old.ip, port: old.port || 0, name: old.name || "", model: "", deviceId: old.deviceId || "", authToken: old.authToken || "", paired: !!old.paired };
+      setTvs([t]); setActive(t.id);
+    }
     var list = getShows(), dirty = false;
     list.forEach(function (s) {
       if (!s.auto) { s.auto = "off"; dirty = true; }
       if (!s.season) { s.season = 1; dirty = true; }
       if (!s.episode) { s.episode = 1; dirty = true; }
+      if (!s.steps) { s.steps = []; dirty = true; }
     });
     if (dirty) setShows(list);
   })();
@@ -816,5 +1170,5 @@
   renderTvChip();
   checkAutoAdvance();
   showScreen("watch");
-  if (!getTv().paired && !getJSON("remotetv.onboarded", false)) openOnboarding("welcome");
+  if (!getTvs().length && !getJSON("remotetv.onboarded", false)) openOnboarding("welcome");
 })();

@@ -97,8 +97,16 @@
       <div class="card" id="tvCard"></div>
 
       <div class="group-label">Streaming apps</div>
-      <p class="hint">Each app is linked once by opening it on the TV. After that, Play opens it straight away.</p>
+      <p class="hint">Popular apps work out of the box. If Play opens the wrong app, open the right one on the TV and tap Re-link.</p>
       <div class="card list" id="appList"></div>
+
+      <div class="group-label">Going to your show</div>
+      <div class="card">
+        <label class="switch-row" style="margin:0;padding:0;border:0">
+          <span><b>My TV is slow</b><small>Waits longer between recorded steps. Turn this on if Play sometimes ends up in the wrong place.</small></span>
+          <input type="checkbox" id="patientToggle"><i></i>
+        </label>
+      </div>
 
       <div class="group-label">Episode tracking</div>
       <div class="card">
@@ -110,7 +118,7 @@
         </div>
       </div>
 
-      <p class="foot">Remote · v1.1</p>
+      <p class="foot">Remote · v1.2</p>
     </section>
   </main>
 
@@ -129,6 +137,9 @@
   <div class="grabber"></div>
   <div id="sheetBody"></div>
 </div>
+
+<!-- teach steps -->
+<div class="onboard teach hidden" id="teach"></div>
 
 <!-- first-run setup -->
 <div class="onboard hidden" id="onboard"></div>
