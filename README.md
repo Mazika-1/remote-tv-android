@@ -1,87 +1,52 @@
-# Remote — Vizio one-button remote (Android app)
+# Remote — one-tap Vizio TV remote (Android)
 
-This is a real, complete Android Studio project — all the code is already
-written. The only thing left is building it once in Android Studio, because
-I don't have a way to compile Android apps from where I'm running.
+Turns on your Vizio TV and opens the streaming app for the show you're
+watching, with one tap. Also a full remote (d-pad, volume, playback).
 
-## Why this had to be an app, not a website
+**Download:** grab the latest APK from
+[Releases](https://github.com/Mazika-1/remote-tv-android/releases/latest),
+open it on your phone and tap to install.
 
-Browsers deliberately block **websites** from sending commands to devices
-on your home WiFi (to stop random sites from attacking your router, TV,
-cameras, etc). Installed apps aren't under that rule — which is why the
-real Vizio app can talk to your TV with no extra setup, and why this has to
-be a real app too. The one file that matters for this is
-`app/src/main/java/dev/mazzen/remote/VizioBridge.kt` — it's the part that
-makes the actual network call to your TV from native code, bypassing the
-restriction a website would hit.
+## How it works
 
-## Step 1 — Build it (one time, a few minutes)
+1. **Find your TV.** The first time you open the app, it searches your
+   WiFi for the TV. Then you type the PIN that appears on the TV screen.
+2. **Add a show.** Enter the name, pick the app (Paramount+, Max, Netflix…)
+   and the season and episode you're on.
+3. **Tap ▶.** The TV turns on and the app opens. The first time you use an
+   app, you'll be asked to open it on the TV once so this app knows which
+   one it is.
 
-1. Open **Android Studio** on your computer.
-2. **File → Open** → select the `remotetv-android` folder (this folder).
-3. Let it "Gradle Sync" (progress bar at the bottom). First time, it may ask
-   to install a missing SDK component/build tools version — click **OK** /
-   **Install and sync**, accept the license if asked. This is automatic,
-   you don't need to pick anything.
-4. Plug your Android phone into the computer by USB (or set up wireless
-   debugging) and enable **Developer options → USB debugging** on the phone
-   if you haven't already (Settings → About phone → tap "Build number" 7
-   times → Developer options appears → turn on USB debugging).
-5. In Android Studio, pick your phone from the device dropdown at the top,
-   then click the green **▶ Run** button. It builds the app and installs it
-   on your phone directly — no manual file transfer needed.
+### What Play does (and doesn't) do
 
-(If you'd rather not plug in your phone: **Build → Build App Bundle(s) /
-APK(s) → Build APK(s)**, then grab the file from
-`app/build/outputs/apk/debug/app-debug.apk`, send it to your phone any way
-you like, and tap it to install — Android will ask you to allow installs
-from that source once.)
+Vizio TVs have no command to open a particular *episode* inside a
+streaming app. Play turns on the TV and opens the right app, and your show
+is usually first in its "Continue Watching" row. The season/episode on
+each card is a reminder for you.
 
-## Step 2 — Set up in the app
+### Automatic episode tracking
 
-Open the app, go to the **Setup** tab:
+Each show can move to the next episode on its own:
 
-1. **TV address** — on the Vizio remote: Menu → Network → Network
-   Connection → (your WiFi) → look for the IP address (something like
-   `192.168.1.xx`). Type it in and tap **Save IP**, then **Test
-   connection** to confirm the phone can reach the TV.
-2. **Pair with the TV** — tap **Start pairing**, a PIN appears on the TV
-   screen, type it in and tap **Submit PIN**.
-3. **App launch configs** — there's no universal "resume my show" command
-   for streaming apps (I was upfront about this earlier). The workaround
-   built in here: open Paramount+ (or Max) on the TV to wherever you want
-   Quick Launch to return to, then in the app tap **Capture app currently
-   open on TV** for that service. Quick Launch will reopen the app to
-   that captured state. Re-capture any time you want to update it.
+- **Every night:** +1 episode each morning.
+- **Only nights I watch:** +1 the morning after a night you tapped Play.
+- **Off:** use the − / + buttons yourself.
 
-## Step 3 — Use it
+**Next season** sets the episode back to 1 and adds 1 to the season. The
+day changes over at 4 AM, so a late-night episode still counts as that
+night. Every automatic change pops up a message with an **Undo** button.
 
-- **Quick Launch** tab — one button per show: turns the TV on (if it's off)
-  and opens that show's app. "+1 Ep" just bumps the episode counter you see
-  on the card, so you remember where you left off.
-- **Shows** tab — add/remove shows, each with a name, streaming service,
-  and season/episode counter you update yourself.
-- **Remote** tab — normal remote: power, volume, mute, d-pad/OK, back,
-  home, menu, input, play/pause, exit.
+## Troubleshooting
 
-## Being upfront about what's untested
+- **"Couldn't reach the TV" when it's off:** turn on *Quick Start* on the
+  TV (Menu → System → Power Mode) so it can be woken over WiFi.
+- **TV not found:** make sure the phone and TV are on the same WiFi. You
+  can also type the TV's IP (Menu → Network → Network Connection).
+- **Wrong app opens:** Settings → Streaming apps → Re-link, with the right
+  app open on the TV.
 
-I don't have your TV, so I couldn't test this against the real device —
-everything here is built from Vizio's own published local API behavior and
-the well-established `pyvizio` library (used by Home Assistant's Vizio
-integration), but a couple of specific things might need a small tweak
-once you actually try them:
+## Building
 
-- **Power-state check** assumes a non-zero value means "on" — if "Quick
-  Launch" tries to turn on a TV that's already on, that's the likely cause.
-- **App launch** sends the exact config captured from "what's currently
-  open" — this is the part most likely to need a retry/re-capture per app,
-  since how well each streaming app responds to being reopened this way
-  varies.
-- Everything on the **Remote** tab (power/volume/dpad/etc.) uses Vizio's
-  documented button codes directly and should just work.
-
-If something doesn't work, the **Test connection** button and the error
-text shown in the app are meant to tell you exactly what failed (timeout vs.
-wrong IP vs. not paired, etc.) rather than failing silently — tell me what
-it says and I can adjust the code.
+GitHub Actions builds the APK and publishes a release on every push (see
+`.github/workflows/release.yml`). The release tag comes from `versionName`
+in `app/build.gradle`. To build locally, open the project in Android Studio.
