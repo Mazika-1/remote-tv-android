@@ -147,33 +147,48 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
     @JavascriptInterface
     fun scanAsync(cbId: String) {
         Thread {
-            val prefix = localSubnetPrefix()
-            if (prefix == null) {
+            val net = localNetwork()
+            if (net == null) {
                 deliver(cbId, JSONObject().put("ok", false)
                     .put("error", "Couldn't find this phone's WiFi address. Is WiFi on?").toString())
                 return@Thread
             }
 
-            val ssdpNames = Collections.synchronizedMap(mutableMapOf<String, Pair<String, String>>())
+            val prefix = net.first
+            val ssdpNames = Collections.synchronizedMap(mutableMapOf<String, Triple<String, String, String>>())
             val ssdp = Thread { ssdpDiscover(ssdpNames) }.apply { start() }
 
+            // Every address on the network, not just the first TV that answers.
             val open = Collections.synchronizedList(mutableListOf<Pair<String, Int>>())
-            val pool = Executors.newFixedThreadPool(48)
-            for (i in 1..254) {
-                val ip = "$prefix.$i"
+            val pool = Executors.newFixedThreadPool(64)
+            for (ip in net.second) {
                 pool.execute {
                     for (port in intArrayOf(7345, 9000)) {
-                        if (portOpen(ip, port)) { open.add(ip to port); break }
+                        if (portOpen(ip, port, 900)) { open.add(ip to port); break }
                     }
                 }
             }
             pool.shutdown()
-            pool.awaitTermination(30, TimeUnit.SECONDS)
+            pool.awaitTermination(45, TimeUnit.SECONDS)
             ssdp.join(6000)
 
+            // TVs that announced themselves but were slow to answer the scan
+            // (common in standby): check them again with more patience.
+            val seen = synchronized(open) { open.map { it.first }.toSet() }
+            for ((ip, info) in ssdpNames.toMap()) {
+                if (ip in seen) continue
+                val looksVizio = info.third.contains("vizio", ignoreCase = true) || info.second.matches(Regex("^[DEMPV]\\d.*"))
+                if (!looksVizio) continue
+                for (port in intArrayOf(7345, 9000)) {
+                    if (portOpen(ip, port, 2500)) { open.add(ip to port); break }
+                }
+            }
+
             val arr = JSONArray()
-            synchronized(open) { open.sortedBy { it.first.substringAfterLast('.').toInt() } }.forEach { (ip, port) ->
-                var (name, model) = ssdpNames[ip] ?: ("" to "")
+            synchronized(open) { open.distinctBy { it.first }.sortedBy { ipNum(it.first) } }.forEach { (ip, port) ->
+                val info = ssdpNames[ip]
+                var name = info?.first ?: ""
+                var model = info?.second ?: ""
                 if (name.isEmpty()) {
                     castName(ip)?.let { name = it }
                 }
@@ -189,15 +204,17 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         }.start()
     }
 
-    private fun portOpen(ip: String, port: Int): Boolean = try {
-        Socket().use { it.connect(InetSocketAddress(ip, port), 450) }
+    private fun ipNum(ip: String): Long = ip.split('.').fold(0L) { acc, p -> acc * 256 + (p.toLongOrNull() ?: 0) }
+
+    private fun portOpen(ip: String, port: Int, timeout: Int): Boolean = try {
+        Socket().use { it.connect(InetSocketAddress(ip, port), timeout) }
         true
     } catch (e: Exception) {
         false
     }
 
     /** Sends SSDP M-SEARCH and reads friendlyName/modelName from each device description. */
-    private fun ssdpDiscover(out: MutableMap<String, Pair<String, String>>) {
+    private fun ssdpDiscover(out: MutableMap<String, Triple<String, String, String>>) {
         val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         val lock = try { wifi?.createMulticastLock("remotetv-ssdp")?.apply { setReferenceCounted(false); acquire() } } catch (e: Exception) { null }
         val locations = mutableMapOf<String, String>()
@@ -234,7 +251,7 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         for ((ip, loc) in locations) {
             val xml = httpGet(loc, 1500) ?: continue
             val name = xmlTag(xml, "friendlyName") ?: continue
-            out[ip] = name to (xmlTag(xml, "modelName") ?: "")
+            out[ip] = Triple(name, xmlTag(xml, "modelName") ?: "", xmlTag(xml, "manufacturer") ?: "")
         }
     }
 
@@ -266,16 +283,32 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         Regex("<$tag>([^<]+)</$tag>").find(xml)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
             ?.replace("&amp;", "&")?.replace("&apos;", "'")?.replace("&quot;", "\"")
 
-    private fun localSubnetPrefix(): String? {
+    /**
+     * The phone's WiFi network: (display prefix, every host address on it).
+     * Uses the real network size, so a /23 or /22 (common on mesh routers)
+     * is fully covered. Capped at a /22 (1022 hosts) to keep the scan quick.
+     */
+    private fun localNetwork(): Pair<String, List<String>>? {
         return try {
             val candidates = NetworkInterface.getNetworkInterfaces().toList()
                 .filter { it.isUp && !it.isLoopback }
                 .sortedBy { if (it.name.startsWith("wlan")) 0 else 1 }
             for (nif in candidates) {
-                for (addr in nif.inetAddresses) {
-                    if (addr is Inet4Address && addr.isSiteLocalAddress) {
-                        return addr.hostAddress?.substringBeforeLast('.')
-                    }
+                for (ia in nif.interfaceAddresses) {
+                    val addr = ia.address
+                    if (addr !is Inet4Address || !addr.isSiteLocalAddress) continue
+                    val bits = ia.networkPrefixLength.toInt().coerceIn(22, 30)
+                    val b = addr.address
+                    val ipInt = ((b[0].toInt() and 255) shl 24) or ((b[1].toInt() and 255) shl 16) or
+                        ((b[2].toInt() and 255) shl 8) or (b[3].toInt() and 255)
+                    val mask = -1 shl (32 - bits)
+                    val base = ipInt and mask
+                    val count = 1 shl (32 - bits)
+                    val hosts = (1 until count - 1).map { i ->
+                        val v = base + i
+                        "${(v ushr 24) and 255}.${(v ushr 16) and 255}.${(v ushr 8) and 255}.${v and 255}"
+                    }.filter { it != addr.hostAddress }
+                    return (addr.hostAddress?.substringBeforeLast('.') ?: "") to hosts
                 }
             }
             null

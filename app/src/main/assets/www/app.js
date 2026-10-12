@@ -1140,7 +1140,7 @@
         '<h1>Pick your TV</h1>' +
         '<p class="lead">Turn the TV on and make sure your phone is on the same WiFi.</p>';
       if (ob.scanning) {
-        html += '<div class="scanning"><div class="spinner"></div>Looking for TVs on your WiFi…</div>';
+        html += '<div class="scanning"><div class="spinner"></div>Looking for every TV on your WiFi (about 10 seconds)…</div>';
       } else if (ob.found && ob.found.length) {
         html += '<div class="found-list">' + ob.found.map(function (f, i) {
           var known = tvs.find(function (t) { return t.ip === f.ip; });
