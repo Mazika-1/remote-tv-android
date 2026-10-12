@@ -20,6 +20,7 @@
   <symbol id="i-gear" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" stroke="currentColor" stroke-width="2" fill="none"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.9 19.35a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.54 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.65 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.54h.08A1.7 1.7 0 0 0 10.1 3V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.46 9v.08A1.7 1.7 0 0 0 21 10.1h.09a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.56 1.03z" stroke="currentColor" stroke-width="1.6" fill="none"/></symbol>
   <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></symbol>
   <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M16 9.5l5 5M21 9.5l-5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+  <symbol id="i-vol" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
   <symbol id="i-input" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="13" rx="2.5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M9 11h6M13 8.5L15.5 11 13 13.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M4 12h10a6 6 0 0 1 0 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none" transform="translate(0 -6)"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11l8-6.5 8 6.5v8.5a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="none"/></symbol>
@@ -75,17 +76,19 @@
           <button class="rkey" data-key="menu"><svg><use href="#i-menu"/></svg><small>Menu</small></button>
         </div>
 
-        <div class="r-row split">
-          <div class="rocker">
-            <button data-key="vol_up" data-repeat aria-label="Volume up"><svg><use href="#i-plus"/></svg></button>
-            <span>VOL</span>
-            <button data-key="vol_down" data-repeat aria-label="Volume down"><svg><use href="#i-minus"/></svg></button>
-          </div>
-          <div class="media">
-            <button class="rkey" data-key="rewind" aria-label="Rewind"><svg><use href="#i-rew"/></svg></button>
-            <button class="rkey" data-key="play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
-            <button class="rkey" data-key="pause" aria-label="Pause"><svg><use href="#i-pause"/></svg></button>
-            <button class="rkey" data-key="ffwd" aria-label="Fast forward"><svg><use href="#i-ff"/></svg></button>
+        <div class="media-row">
+          <button class="rkey" data-key="rewind" aria-label="Rewind"><svg><use href="#i-rew"/></svg></button>
+          <button class="rkey" data-key="play" aria-label="Play"><svg><use href="#i-play"/></svg></button>
+          <button class="rkey" data-key="pause" aria-label="Pause"><svg><use href="#i-pause"/></svg></button>
+          <button class="rkey" data-key="ffwd" aria-label="Fast forward"><svg><use href="#i-ff"/></svg></button>
+        </div>
+
+        <div class="vol-card">
+          <div class="vol-head"><span>Volume</span><b id="volValue">–</b></div>
+          <div class="vol-row">
+            <button class="vol-step" data-key="vol_down" data-repeat aria-label="Volume down"><svg><use href="#i-minus"/></svg></button>
+            <input type="range" id="volSlider" min="0" max="100" step="1" value="0" aria-label="TV volume">
+            <button class="vol-step" data-key="vol_up" data-repeat aria-label="Volume up"><svg><use href="#i-plus"/></svg></button>
           </div>
         </div>
       </div>
@@ -108,6 +111,14 @@
         </label>
       </div>
 
+      <div class="group-label">Volume</div>
+      <div class="card">
+        <label class="switch-row" style="margin:0;padding:0;border:0">
+          <span><b>Phone volume buttons control the TV</b><small>While this app is open, your phone's volume buttons turn the TV up and down instead of the phone.</small></span>
+          <input type="checkbox" id="volKeysToggle"><i></i>
+        </label>
+      </div>
+
       <div class="group-label">Episode tracking</div>
       <div class="card">
         <div class="row-item">
@@ -118,7 +129,7 @@
         </div>
       </div>
 
-      <p class="foot">Remote · v1.7</p>
+      <p class="foot">Remote · v1.8</p>
     </section>
   </main>
 
@@ -143,6 +154,8 @@
 
 <!-- first-run setup -->
 <div class="onboard hidden" id="onboard"></div>
+
+<div class="vol-hud" id="volHud"><svg><use href="#i-vol"/></svg><div class="bar"><i id="volHudBar"></i></div><b id="volHudVal">–</b></div>
 
 <div class="toast" id="toast"><span id="toastText"></span><button id="toastAction" class="hidden"></button></div>
 

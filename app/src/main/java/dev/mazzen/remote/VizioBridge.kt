@@ -347,6 +347,15 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         return text
     }
 
+    /** Set from the page's Settings switch; read by MainActivity on volume key presses. */
+    @Volatile
+    var volumeKeysEnabled = false
+
+    @JavascriptInterface
+    fun setVolumeKeys(enabled: Boolean) {
+        volumeKeysEnabled = enabled
+    }
+
     @JavascriptInterface
     fun haptic() {
         main.post { webView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP) }

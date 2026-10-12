@@ -11,8 +11,8 @@ android {
         applicationId "dev.mazzen.remote"
         minSdk 26
         targetSdk 34
-        versionCode 8
-        versionName "1.7"
+        versionCode 9
+        versionName "1.8"
     }
 
     // Fixed debug key (committed on purpose) so every CI build is signed the

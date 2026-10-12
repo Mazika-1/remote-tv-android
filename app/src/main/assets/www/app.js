@@ -203,6 +203,29 @@
     if (!item) return null;
     return Number(item.VALUE) !== 0;
   }
+  // ---------- volume ----------
+  // Vizio exposes volume as a TV setting: read it to get its value and a
+  // HASHVAL, then write the new value with that HASHVAL.
+  var VOL_PATH = "/menu_native/dynamic/tv_settings/audio/volume";
+  async function getVolume(tv) {
+    var res = await tvCall("GET", VOL_PATH, null, { tv: tv, timeout: 3000 });
+    var item = res.ok && res.json && res.json.ITEMS && res.json.ITEMS[0];
+    if (!item || item.VALUE == null) return null;
+    return { value: Number(item.VALUE), hash: item.HASHVAL };
+  }
+  async function setVolume(n, tv) {
+    n = Math.max(0, Math.min(100, Math.round(n)));
+    var cur = await getVolume(tv);
+    if (!cur) return false;
+    if (cur.value === n) return true;
+    var res = await tvCall("PUT", VOL_PATH, { REQUEST: "MODIFY", HASHVAL: cur.hash, VALUE: n }, { tv: tv });
+    if (res.ok) return true;
+    // Fallback: step there with the volume buttons.
+    var diff = n - cur.value, key = diff > 0 ? "vol_up" : "vol_down";
+    for (var i = 0; i < Math.min(Math.abs(diff), 60); i++) await sendKey(key);
+    return true;
+  }
+
   function readCurrentApp(res) {
     var item = res.ok && res.json && res.json.ITEM;
     var val = item && (item.VALUE || item);
@@ -341,6 +364,7 @@
     $("#screenTitle").textContent = TITLES[name];
     $("#fab").classList.toggle("hidden", name !== "watch" || getShows().length === 0);
     if (name === "settings") renderSettings();
+    if (name === "remote") refreshVolume();
     window.scrollTo(0, 0);
   }
   $$(".tab").forEach(function (b) { b.addEventListener("click", function () { haptic(); showScreen(b.dataset.screen); }); });
@@ -422,7 +446,12 @@
             '<div class="upnext">' +
               '<div class="upnext-label">You\'re on</div>' +
               '<div class="upnext-val"><b>S' + s.season + '<span>·</span>E' + s.episode + '</b></div>' +
-              (autoTxt ? '<div class="auto-badge">' + icon("moon") + autoTxt + '</div>' : '') +
+              (function () {
+                var tvNow = activeTv(), vol = s.volumeOn && s.volumes && tvNow ? s.volumes[tvNow.id] : null;
+                var badges = (autoTxt ? '<div class="auto-badge">' + icon("moon") + autoTxt + '</div>' : '') +
+                  (vol != null ? '<div class="auto-badge vol">' + icon("vol") + 'Volume ' + vol + '</div>' : '');
+                return badges ? '<div class="badges">' + badges + '</div>' : '';
+              })() +
             '</div>' +
             '<button class="play-btn" data-act="' + (isReady && ready.paused ? "tv-play" : "play") + '" aria-label="Play ' + esc(s.name) + '">' + icon("play") + '</button>' +
           '</div>' +
@@ -506,6 +535,7 @@
       var power = await ensureOn(status);
       if (!power.ok) { toast(power.error, { bad: true, duration: 7000 }); return; }
       if (run.stop) return;
+      applyShowVolume(show);
 
       var useLink = show.link && show.linkWorks;
       var res = await openApp(useLink ? Object.assign({}, app, { MESSAGE: linkMessage(show.link) }) : app, svc.label, status);
@@ -565,6 +595,7 @@
         await sendKey("pow_on");
         await delay(600);
       }
+      applyShowVolume(show, power.status && readPowerOn(power) === false);
       var opened = hasBridge() && VizioBridge.openUrl && VizioBridge.openUrl(show.castLink);
       if (!opened) { toast("Couldn't open the link. Check it in the show's settings.", { bad: true }); return; }
       toast("In " + svc.label + ": tap Cast, pick " + tvLabel(activeTv()) + ", then Play.", { duration: 8000 });
@@ -575,6 +606,17 @@
     } finally {
       btn.classList.remove("busy");
       playing = null;
+    }
+  }
+
+  /** Sets this show's volume for the current TV, if the show has one. Retries while a just-woken TV settles. */
+  async function applyShowVolume(show, justWoke) {
+    var tv = activeTv();
+    var v = show.volumeOn && show.volumes && tv && show.volumes[tv.id];
+    if (v == null || v === false) return;
+    for (var i = 0; i < (justWoke ? 6 : 2); i++) {
+      if (i || justWoke) await delay(2500);
+      if (await setVolume(v)) return;
     }
   }
 
@@ -671,6 +713,21 @@
             '<div class="status-msg" id="fLinkMsg">' + (s.link ? (s.linkWorks ? "Works: Play uses this link." : "Not confirmed. Play uses your steps instead.") : "") + '</div>' +
           '</details>' +
         '</div></div>') +
+      (function () {
+        var tvs = getTvs();
+        if (!tvs.length) return '';
+        var vols = s.volumes || {};
+        return '<div class="field"><label>Volume</label><div class="card inset">' +
+          '<label class="switch-row" style="margin:0;padding:0;border:0"><span><b>Set the volume when it starts</b><small>Each TV can have its own level</small></span>' +
+            '<input type="checkbox" id="fVolOn"' + (s.volumeOn ? " checked" : "") + '><i></i></label>' +
+          '<div id="fVolList"' + (s.volumeOn ? '' : ' class="hidden"') + '>' + tvs.map(function (t) {
+            var v = vols[t.id] != null ? vols[t.id] : 20;
+            return '<div class="show-vol"><span class="tvn">' + esc(tvLabel(t)) + '</span>' +
+              '<input type="range" min="0" max="100" step="1" value="' + v + '" data-voltv="' + t.id + '" style="--fill:' + v + '%">' +
+              '<b>' + v + '</b></div>';
+          }).join("") + '</div>' +
+        '</div></div>';
+      })() +
       '<div class="field"><label>You\'re on</label><div class="two">' +
         numField("fSeason", "Season", s.season) + numField("fEp", "Episode", s.episode) +
       '</div></div>' +
@@ -698,6 +755,11 @@
       });
     });
     wireNumFields(body);
+    var volOn = $("#fVolOn");
+    if (volOn) volOn.addEventListener("change", function () { haptic(); $("#fVolList").classList.toggle("hidden", !volOn.checked); });
+    $$("[data-voltv]", body).forEach(function (r) {
+      r.addEventListener("input", function () { r.style.setProperty("--fill", r.value + "%"); r.nextElementSibling.textContent = r.value; });
+    });
     if (isNew) setTimeout(function () { $("#fName").focus(); }, 350);
 
     function save() {
@@ -708,6 +770,7 @@
       var list = getShows(), t;
       if (isNew) {
         t = { id: uid(), name: name, service: sel, season: season, episode: ep, auto: auto, lastDay: tvDay(), playedDays: [], steps: [], pauseAtStart: true, link: "", linkWorks: false };
+        readVolumeFields(t);
         list.push(t);
       } else {
         t = list.find(function (x) { return x.id === show.id; });
@@ -715,6 +778,7 @@
           if (t.auto !== auto) t.lastDay = tvDay();
           if (t.service !== sel) { t.steps = []; t.link = ""; t.linkWorks = false; } // these belong to the old app
           var pz = $("#fPause"); if (pz) t.pauseAtStart = pz.checked;
+          readVolumeFields(t);
           var lk = $("#fLink");
           if (lk && lk.value.trim() !== (t.link || "")) { t.link = lk.value.trim(); t.linkWorks = false; }
           t.name = name; t.service = sel; t.season = season; t.episode = ep; t.auto = auto;
@@ -770,6 +834,14 @@
         onAction: function () { var l = getShows(); l.splice(idx, 0, removed); setShows(l); renderShows(); }
       });
     });
+  }
+
+  function readVolumeFields(t) {
+    var on = $("#fVolOn");
+    if (!on) return;
+    t.volumeOn = on.checked;
+    t.volumes = t.volumes || {};
+    $$("[data-voltv]").forEach(function (r) { t.volumes[r.dataset.voltv] = Number(r.value); });
   }
 
   function numField(id, label, val) {
@@ -981,6 +1053,65 @@
     ["pointerup", "pointercancel", "pointerleave"].forEach(function (ev) { el.addEventListener(ev, stop); });
     el.addEventListener("contextmenu", function (e) { e.preventDefault(); });
   });
+
+  // ---------- volume slider, HUD and phone volume buttons ----------
+  var volSlider = $("#volSlider"), volKnown = null, volDragging = false, volTarget = null, volBusy = false, volRefreshTimer;
+  function showVolume(v) {
+    volKnown = v;
+    $("#volValue").textContent = v == null ? "–" : v;
+    if (v != null && !volDragging) { volSlider.value = v; }
+    volSlider.style.setProperty("--fill", (v == null ? 0 : v) + "%");
+    volSlider.disabled = v == null;
+  }
+  async function refreshVolume() {
+    var tv = activeTv();
+    if (!tv || !tv.paired) { showVolume(null); return; }
+    var v = await getVolume();
+    if (!volDragging && volTarget == null) showVolume(v ? v.value : null);
+  }
+  function refreshVolumeSoon() { clearTimeout(volRefreshTimer); volRefreshTimer = setTimeout(refreshVolume, 700); }
+  function queueVolume(n) {
+    volTarget = n;
+    if (volBusy) return;
+    volBusy = true;
+    (async function () {
+      while (volTarget != null) { var v = volTarget; volTarget = null; await setVolume(v); }
+      volBusy = false;
+      refreshVolumeSoon();
+    })();
+  }
+  volSlider.addEventListener("input", function () {
+    volDragging = true;
+    var v = Number(volSlider.value);
+    $("#volValue").textContent = v;
+    volSlider.style.setProperty("--fill", v + "%");
+    queueVolume(v);
+  });
+  volSlider.addEventListener("change", function () { volDragging = false; haptic(); });
+  ["pointerup", "pointercancel", "touchend"].forEach(function (ev) { volSlider.addEventListener(ev, function () { volDragging = false; }); });
+  $$("[data-key='vol_up'], [data-key='vol_down']").forEach(function (b) { b.addEventListener("pointerup", refreshVolumeSoon); });
+
+  var hudTimer;
+  function showHud(v) {
+    $("#volHudVal").textContent = v == null ? "–" : v;
+    $("#volHudBar").style.width = (v == null ? 0 : v) + "%";
+    $("#volHud").classList.add("on");
+    clearTimeout(hudTimer);
+    hudTimer = setTimeout(function () { $("#volHud").classList.remove("on"); }, 1500);
+  }
+  window.onVolumeKey = function (dir) {
+    var tv = activeTv();
+    if (!tv || !tv.paired) { toast("Set up your TV first to use the volume buttons"); return; }
+    sendKey(dir === "up" ? "vol_up" : "vol_down");
+    if (volKnown != null) showVolume(Math.max(0, Math.min(100, volKnown + (dir === "up" ? 1 : -1))));
+    showHud(volKnown);
+    refreshVolumeSoon();
+  };
+  var volKeys = $("#volKeysToggle");
+  volKeys.checked = getJSON("remotetv.volumeKeys", true);
+  function syncVolumeKeys() { try { if (hasBridge() && VizioBridge.setVolumeKeys) VizioBridge.setVolumeKeys(!!volKeys.checked); } catch (e) {} }
+  volKeys.addEventListener("change", function () { haptic(); setJSON("remotetv.volumeKeys", volKeys.checked); syncVolumeKeys(); });
+  syncVolumeKeys();
 
   // =====================================================================
   // TV picker + management
