@@ -507,3 +507,24 @@ input[type=range]:disabled { opacity: .4; }
 .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .badges .auto-badge { margin-top: 0; }
 .auto-badge.vol { background: rgba(255,255,255,.1); color: var(--text-2); }
+
+/* v1.9: ask before playing */
+.ask-q { margin: 12px 0 4px; height: 46px; font-size: 14px; }
+.ans-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.ans-row .input { flex: 1; min-width: 0; height: 44px; font-size: 14px; }
+.ans-row .pill-btn { height: 44px; }
+.pill-btn.del { width: 44px; padding: 0; display: grid; place-items: center; color: var(--text-2); }
+.pill-btn.del svg { width: 16px; height: 16px; }
+.ask-list { display: flex; flex-direction: column; gap: 10px; }
+.ask-opt {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  min-height: 64px; padding: 14px 18px; border-radius: 18px; justify-content: center;
+  background: linear-gradient(135deg, rgba(108,140,255,.22), rgba(142,108,255,.22)); border: 1.5px solid rgba(108,140,255,.35);
+}
+.ask-opt b { font-size: 17px; }
+.ask-opt small { color: var(--text-3); font-size: 12px; }
+.ask-opt:active { transform: scale(.98); }
+.ask-opt:disabled { background: var(--surface-2); border-color: transparent; opacity: .6; }
+.link-row { display: flex; gap: 18px; padding-top: 8px; }
+.link-row .link-btn { padding: 0; }
+.card.inset .input { background: var(--surface-3); }

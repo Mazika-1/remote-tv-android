@@ -387,6 +387,7 @@
   // =====================================================================
   var sheetOnClose = null;
   function openSheet(html, onClose) {
+    hideToast();
     $("#sheetBody").innerHTML = html;
     $("#scrim").classList.remove("hidden");
     var s = $("#sheet");
@@ -431,7 +432,7 @@
             '<button class="mini-btn" data-act="tv-pause" aria-label="Pause">' + icon("pause") + '</button>' +
             '<button class="mini-btn primary" data-act="tv-play" aria-label="Play">' + icon("play") + '</button></div>'
         : mode === "cast" ? '<span class="go-direct">' + icon("check") + 'Opens ' + esc(svc.label) + ' on your phone: tap Cast, then Play</span>'
-        : hasSteps ? '<span class="go-direct">' + icon("check") + 'Goes straight to your show' + (s.pauseAtStart !== false ? ", paused" : "") + '</span>'
+        : hasSteps ? '<span class="go-direct">' + icon("check") + (asksFirst(s) ? 'Asks first, then goes to your show' : 'Goes straight to your show') + (s.pauseAtStart !== false ? ", paused" : "") + '</span>'
         : '<button class="teach-link" data-act="teach">' + icon("play") + 'Make Play go to the episode</button>';
       return '' +
         '<article class="show' + (isReady ? " is-ready" : "") + '" data-id="' + s.id + '" style="--brand:' + svc.color + ';animation-delay:' + (i * 40) + 'ms">' +
@@ -518,7 +519,44 @@
     return link;
   }
 
-  async function playShow(show, btn) {
+  /** The question's answers: the show's usual steps first, then any extra recorded routes. */
+  function askAnswers(show) {
+    var ask = show.ask || {};
+    return [{ id: "main", label: ask.mainLabel || "No, just this show", steps: show.steps || [] }].concat(ask.answers || []);
+  }
+  function asksFirst(show) {
+    return showMode(show) === "steps" && show.ask && show.ask.on && (show.ask.answers || []).length > 0;
+  }
+
+  function openAskSheet(show, btn) {
+    var svc = service(show.service);
+    var answers = askAnswers(show);
+    var body = openSheet(
+      '<h2>' + esc(show.ask.question || "Did you watch something else since last time?") + '</h2>' +
+      '<p class="lead">' + esc(show.name) + '</p>' +
+      '<div class="ask-list">' + answers.map(function (a, i) {
+        var ready = a.steps && a.steps.length;
+        return '<button class="ask-opt" data-ans="' + i + '"' + (ready ? '' : ' disabled') + '>' +
+          '<b>' + esc(a.label) + '</b>' + (ready ? '' : '<small>Not taught yet</small>') + '</button>';
+      }).join("") + '</div>' +
+      '<div class="sheet-actions">' +
+        '<button class="btn block" id="askOpen">Just open ' + esc(svc.label) + '</button>' +
+        '<button class="btn ghost block" id="askCancel">Cancel</button>' +
+      '</div>'
+    );
+    $$("[data-ans]", body).forEach(function (b) {
+      b.addEventListener("click", function () {
+        haptic();
+        var a = answers[Number(b.dataset.ans)];
+        closeSheet();
+        playShow(show, btn, { steps: a.steps, label: a.label });
+      });
+    });
+    on("askOpen", function () { closeSheet(); playShow(show, btn, { steps: [], label: "open" }); });
+    on("askCancel", closeSheet);
+  }
+
+  async function playShow(show, btn, route) {
     var tv = activeTv();
     if (!tv) { openOnboarding("find"); return; }
     if (!tv.paired) { openOnboarding("find"); return; }
@@ -526,6 +564,7 @@
     var app = appFor(show.service);
     if (!app) { openLinkSheet(show.service, function () { playShow(show, btn); }); return; }
     if (playing) return;
+    if (!route && asksFirst(show)) { openAskSheet(show, btn); return; }
 
     var svc = service(show.service);
     var run = playing = { stop: false };
@@ -545,7 +584,8 @@
         return;
       }
 
-      var steps = useLink ? [] : (show.steps || []);
+      var steps = route ? route.steps : useLink ? [] : (show.steps || []);
+      if (route && !steps.length) useLink = false;
       if (steps.length || useLink) {
         var f = stepFactor();
         for (var i = 0; i < steps.length; i++) {
@@ -701,9 +741,27 @@
               : m === "steps" ? "Play repeats your recorded steps on the TV." : "Choose how Play should get to your episode.";
             return '<div class="row-item"><div class="ri-main"><div class="ri-title">' + title + '</div><div class="ri-sub">' + sub + '</div></div>' +
               '<button class="pill-btn accent" id="fGoTo">Change</button></div>' +
-              (m === "steps" ? '<button class="link-btn" id="fTeach" style="padding:8px 0 0">Re-teach steps</button>' : '');
+              ((m === "steps" || nSteps) ? '<div class="link-row">' +
+                (m === "steps" ? '<button class="link-btn" id="fTeach">Re-teach steps</button>' : '') +
+                (nSteps ? '<button class="link-btn" id="fClearSteps">Remove steps</button>' : '') + '</div>' : '');
           })() +
-          (nSteps ? '<button class="link-btn" id="fClearSteps" style="padding:8px 0 0">Remove steps</button>' : '') +
+          (showMode(s) === "steps" ? (function () {
+            var ask = s.ask || {};
+            return '<label class="switch-row"><span><b>Ask a question first</b><small>e.g. if you watched something else, Play follows different steps</small></span>' +
+              '<input type="checkbox" id="fAskOn"' + (ask.on ? " checked" : "") + '><i></i></label>' +
+              '<div id="fAskBox"' + (ask.on ? '' : ' class="hidden"') + '>' +
+                '<input class="input ask-q" id="fAskQ" maxlength="80" value="' + esc(ask.question || ("Did you watch something else on " + service(s.service).label + " since last time?")) + '">' +
+                askAnswers(s).map(function (a) {
+                  var n = (a.steps || []).length;
+                  return '<div class="ans-row" data-ansrow="' + a.id + '">' +
+                    '<input class="input" data-anslabel="' + a.id + '" maxlength="40" value="' + esc(a.label) + '">' +
+                    '<button class="pill-btn' + (n ? '' : ' accent') + '" data-teachans="' + a.id + '">' + (n ? "Re-teach" : "Teach") + '</button>' +
+                    (a.id === "main" ? '' : '<button class="pill-btn del" data-delans="' + a.id + '" aria-label="Remove answer">' + icon("close") + '</button>') +
+                  '</div>';
+                }).join("") +
+                '<button class="btn block" id="fAddAns" style="margin-top:10px">' + icon("plus") + 'Add an answer</button>' +
+              '</div>';
+          })() : '') +
           '<label class="switch-row"><span><b>Pause it at the start</b><small>So it\'s cued up and waiting when you sit down</small></span>' +
             '<input type="checkbox" id="fPause"' + (s.pauseAtStart !== false ? " checked" : "") + '><i></i></label>' +
           '<details class="adv"' + (s.link ? " open" : "") + '><summary>Try a direct link (experimental)</summary>' +
@@ -778,6 +836,7 @@
           if (t.auto !== auto) t.lastDay = tvDay();
           if (t.service !== sel) { t.steps = []; t.link = ""; t.linkWorks = false; } // these belong to the old app
           var pz = $("#fPause"); if (pz) t.pauseAtStart = pz.checked;
+          readAskFields(t);
           readVolumeFields(t);
           var lk = $("#fLink");
           if (lk && lk.value.trim() !== (t.link || "")) { t.link = lk.value.trim(); t.linkWorks = false; }
@@ -797,6 +856,30 @@
       }
     });
     on("fTeach", function () { var t = save(); if (!t) return; closeSheet(); renderShows(); openTeach(findShow(t.id)); });
+    var askOn = $("#fAskOn");
+    if (askOn) askOn.addEventListener("change", function () { haptic(); $("#fAskBox").classList.toggle("hidden", !askOn.checked); });
+    $$("[data-delans]", body).forEach(function (b) {
+      b.addEventListener("click", function () { haptic(); var row = b.closest("[data-ansrow]"); if (row) row.remove(); });
+    });
+    $$("[data-teachans]", body).forEach(function (b) {
+      b.addEventListener("click", function () {
+        haptic();
+        var t = save(); if (!t) return;
+        closeSheet(); renderShows();
+        openTeach(findShow(t.id), b.dataset.teachans);
+      });
+    });
+    on("fAddAns", function () {
+      var t = save(); if (!t) return;
+      var id = uid();
+      updateShow(t.id, function (x) {
+        x.ask = x.ask || { on: true, answers: [] };
+        x.ask.on = true;
+        x.ask.answers = (x.ask.answers || []).concat([{ id: id, label: "Yes, I watched something else", steps: [] }]);
+      });
+      closeSheet(); renderShows();
+      openTeach(findShow(t.id), id);
+    });
     on("fGoTo", function () { var t = save(); if (!t) return; closeSheet(); renderShows(); setTimeout(function () { openGoToSheet(findShow(t.id)); }, 250); });
     on("fLinkTest", async function () {
       var link = $("#fLink").value.trim();
@@ -836,6 +919,23 @@
     });
   }
 
+  function readAskFields(t) {
+    var on = $("#fAskOn");
+    if (!on) return;
+    t.ask = t.ask || { answers: [] };
+    t.ask.on = on.checked;
+    t.ask.question = $("#fAskQ").value.trim();
+    var keep = {};
+    $$("[data-anslabel]").forEach(function (inp) {
+      var id = inp.dataset.anslabel, label = inp.value.trim();
+      keep[id] = true;
+      if (id === "main") { t.ask.mainLabel = label || "No, just this show"; return; }
+      var a = (t.ask.answers || []).find(function (x) { return x.id === id; });
+      if (a) a.label = label || a.label;
+    });
+    t.ask.answers = (t.ask.answers || []).filter(function (a) { return keep[a.id]; });
+  }
+
   function readVolumeFields(t) {
     var on = $("#fVolOn");
     if (!on) return;
@@ -869,11 +969,11 @@
   // =====================================================================
   var teach = null; // { showId, phase: 'intro'|'opening'|'rec', steps: [], last: ms, busy }
 
-  function openTeach(show) {
+  function openTeach(show, answerId) {
     if (!show) return;
     var tv = activeTv();
     if (!tv || !tv.paired) { openOnboarding("find"); return; }
-    teach = { showId: show.id, phase: "intro", steps: [], last: 0 };
+    teach = { showId: show.id, answerId: answerId || "main", phase: "intro", steps: [], last: 0 };
     $("#teach").classList.remove("hidden");
     renderTeach();
   }
@@ -886,13 +986,14 @@
     var show = findShow(teach.showId);
     var svc = service(show.service);
     var el = $("#teach");
-    var html = '<div class="ob-top"><span class="teach-title">' + esc(show.name) + '</span><button class="link-btn" id="tClose">Cancel</button></div>';
+    var ans = teach.answerId !== "main" && show.ask && (show.ask.answers || []).find(function (a) { return a.id === teach.answerId; });
+    var html = '<div class="ob-top"><span class="teach-title">' + esc(show.name) + (ans ? ' · "' + esc(ans.label) + '"' : '') + '</span><button class="link-btn" id="tClose">Cancel</button></div>';
 
     if (teach.phase === "intro") {
       html +=
         '<div class="ob-body">' +
           '<div class="ob-art">' + icon("play") + '</div>' +
-          '<h1>Teach Play the way to your show</h1>' +
+          '<h1>' + (ans ? 'Teach the steps for "' + esc(ans.label) + '"' : 'Teach Play the way to your show') + '</h1>' +
           '<p class="lead">You only do this once. The app opens ' + esc(svc.label) + ' on the TV. Then use the buttons here, while watching the TV, to get to ' + esc(show.name) + ' and start it playing. Next time, Play repeats exactly that and pauses it at the start.</p>' +
           '<div class="note">' + icon("check") + '<span>Choose your show from <b>Continue Watching</b> (usually the first row) instead of searching. That way it always opens at the episode you\'re up to. Take your time: the app waits as long as you did, plus a bit extra.</span></div>' +
           '<div class="ob-actions" style="margin-top:22px"><button class="btn primary big block" id="tStart">Open ' + esc(svc.label) + ' and start</button></div>' +
@@ -928,9 +1029,14 @@
     on("tUndo", function () { teach.steps.pop(); renderTeach(); });
     on("tSave", function () {
       var steps = teach.steps.slice();
-      updateShow(teach.showId, function (s) { s.steps = steps; s.mode = "steps"; });
+      var aid = teach.answerId;
+      updateShow(teach.showId, function (s) {
+        s.mode = "steps";
+        var a = aid !== "main" && s.ask && (s.ask.answers || []).find(function (x) { return x.id === aid; });
+        if (a) a.steps = steps; else s.steps = steps;
+      });
       closeTeach(); renderShows();
-      toast("Saved. Play now goes straight to " + show.name + ".", { duration: 4000 });
+      toast(aid !== "main" && ans ? 'Saved the steps for "' + ans.label + '".' : "Saved. Play now goes straight to " + show.name + ".", { duration: 4000 });
     });
     $$("[data-tkey]", el).forEach(function (b) {
       b.addEventListener("pointerdown", function (e) {
