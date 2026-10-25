@@ -52,7 +52,23 @@
   function getTvs() { return getJSON("remotetv.tvs", []); }
   function setTvs(l) { setJSON("remotetv.tvs", l); renderTvChip(); }
   function activeId() { return getJSON("remotetv.activeTv", null); }
-  function setActive(id) { setJSON("remotetv.activeTv", id); renderTvChip(); }
+  function setActive(id) {
+    var changed = activeId() !== id;
+    setJSON("remotetv.activeTv", id);
+    renderTvChip();
+    if (!changed) return;
+    // Everything on screen now refers to the newly selected TV.
+    if (typeof ready !== "undefined") ready = null;
+    if (typeof volTarget !== "undefined") volTarget = null;
+    if (typeof renderShows === "function" && document.getElementById("showList")) renderShows();
+    if (typeof current !== "undefined" && current === "remote" && typeof refreshVolume === "function") { showVolume(null); refreshVolume(); }
+    if (typeof current !== "undefined" && current === "settings") renderSettings();
+  }
+  /** Switching TVs while Play or recording is running would send the rest of it to the other TV. */
+  function canSwitchTv() {
+    if (playing || teach) { toast("Wait until the current Play finishes (or tap Stop) before switching TVs.", { bad: true }); return false; }
+    return true;
+  }
   function activeTv() {
     var tvs = getTvs(), id = activeId();
     return tvs.find(function (t) { return t.id === id; }) || tvs[0] || null;
@@ -155,8 +171,22 @@
 
   var PORTS = [7345, 9000]; // newer firmware uses 7345, older 9000
 
-  /** opts.tv: call a specific TV ({ip, port, authToken}) instead of the active one. */
+  /**
+   * Every request to the selected TV goes through here. Before talking to it,
+   * the app checks the TV at that address really is the one you picked
+   * (routers can hand a TV's address to another device). If it isn't,
+   * nothing is sent. opts.tv calls a specific TV instead and skips the check.
+   */
   async function tvCall(method, path, body, opts) {
+    opts = opts || {};
+    if (!opts.tv && !opts.noVerify) {
+      var v = await verifyActive();
+      if (!v.ok) return { ok: false, error: v.error, wrongTv: true };
+    }
+    return rawTvCall(method, path, body, opts);
+  }
+
+  async function rawTvCall(method, path, body, opts) {
     opts = opts || {};
     var tv = opts.tv || activeTv();
     if (!tv || !tv.ip) return { ok: false, error: "No TV set up yet.", noTv: true };
@@ -176,7 +206,86 @@
     return res;
   }
 
+  // ---------- making sure it's the TV you picked ----------
+  function identFrom(res) {
+    var body = (res && res.body) || "";
+    var sn = /"SERIAL_NUMBER"\s*:\s*"([^"]+)"/.exec(body);
+    if (sn) return "sn:" + sn[1];
+    var mn = /"MODEL_NAME"\s*:\s*"([^"]+)"/.exec(body), nm = /"(?:CAST_NAME|NAME)"\s*:\s*"([^"]+)"/.exec(body);
+    return mn || nm ? "mn:" + (mn ? mn[1] : "") + "|" + (nm ? nm[1] : "") : null;
+  }
+  function modelFrom(res) {
+    var mn = /"MODEL_NAME"\s*:\s*"([^"]+)"/.exec((res && res.body) || "");
+    return mn ? mn[1] : "";
+  }
+  function isAuthErr(res) { return !!(res && res.vizioResult && /AUTH/.test(res.vizioResult)); }
+
+  /** Who is at this address? {reached, ident, model, authBad} */
+  async function probeTv(target) {
+    var res = await rawTvCall("GET", "/state/device/deviceinfo", null, { tv: target, timeout: 2500 });
+    return { reached: !!res.status, ident: identFrom(res), model: modelFrom(res), authBad: isAuthErr(res) };
+  }
+  /** Does this TV accept our pairing code? (Another TV won't.) */
+  async function acceptsToken(target) {
+    var res = await rawTvCall("GET", "/menu_native/dynamic/tv_settings/audio/volume", null, { tv: target, timeout: 2500 });
+    return !!res.status && !isAuthErr(res);
+  }
+  function looksLikeTv(tv, probe) {
+    if (probe.authBad) return false;
+    if (tv.ident && probe.ident) return probe.ident === tv.ident;
+    if (tv.model && probe.model && tv.model.toUpperCase() !== probe.model.toUpperCase()) return false;
+    return true;
+  }
+
+  var verifiedAt = {}, verifying = null;
+  function verifyActive() {
+    var tv = activeTv();
+    if (!tv || !tv.ip || !tv.paired) return Promise.resolve({ ok: true });
+    var key = tv.id + "@" + tv.ip;
+    if (verifiedAt[key] && Date.now() - verifiedAt[key] < 180000) return Promise.resolve({ ok: true });
+    if (!verifying) {
+      verifying = verifyTv(tv).then(function (r) { verifying = null; if (r.ok && r.cache) verifiedAt[r.key || key] = Date.now(); return r; },
+        function () { verifying = null; return { ok: true }; });
+    }
+    return verifying;
+  }
+  async function verifyTv(tv) {
+    var probe = await probeTv(tv);
+    if (!probe.reached) return { ok: true }; // off/unreachable: requests just fail, nothing reaches another TV
+    var good = looksLikeTv(tv, probe) && (tv.ident ? true : await acceptsToken(tv));
+    if (!good) return relocateTv(tv);
+    if (!tv.ident && probe.ident) updateTv(tv.id, function (t) { t.ident = probe.ident; if (!t.model && probe.model) t.model = probe.model; });
+    return { ok: true, cache: true };
+  }
+  function scanNetwork() {
+    return new Promise(function (resolve) {
+      if (!hasBridge()) { resolve([]); return; }
+      var id = uid();
+      pending[id] = function (res) { resolve((res.ok && res.found) || []); };
+      VizioBridge.scanAsync(id);
+    });
+  }
+  /** The selected TV isn't at its saved address any more: find it by identity. */
+  async function relocateTv(tv) {
+    toast("A different TV is at " + tvLabel(tv) + "'s address. Nothing was sent. Looking for " + tvLabel(tv) + "…", { sticky: true });
+    var found = await scanNetwork();
+    for (var i = 0; i < found.length; i++) {
+      var f = found[i];
+      if (f.ip === tv.ip) continue;
+      var target = { ip: f.ip, port: f.port, authToken: tv.authToken };
+      var probe = await probeTv(target);
+      if (!probe.reached || !looksLikeTv(tv, probe)) continue;
+      if (!tv.ident && !(await acceptsToken(target))) continue;
+      updateTv(tv.id, function (t) { t.ip = f.ip; t.port = f.port; if (probe.ident) t.ident = probe.ident; });
+      toast("Found " + tvLabel(tv) + " at its new address.", { duration: 3500 });
+      return { ok: true, cache: true, key: tv.id + "@" + f.ip };
+    }
+    hideToast();
+    return { ok: false, error: "Couldn't find " + tvLabel(tv) + ". Another TV now has its address, so nothing was sent to it. Make sure " + tvLabel(tv) + " is on, or pair it again in Settings." };
+  }
+
   function describeError(res) {
+    if (res.wrongTv) return res.error;
     if (res.noTv) return "Set up your TV first.";
     if (res.vizioResult && /AUTH/.test(res.vizioResult)) return "The TV doesn't recognise this phone any more. Pair it again in Settings.";
     if (!res.status) return "Couldn't reach " + tvLabel(activeTv()) + ". Check it's plugged in and your phone is on the same WiFi.";
@@ -258,12 +367,13 @@
   /** Turns the TV on if needed. Returns {ok, wasOff} or {ok:false, error}. */
   async function ensureOn(status) {
     var power = await tvCall("GET", "/state/device/power_mode", null, { timeout: 4000 });
+    if (power.wrongTv) return { ok: false, error: power.error };
     if (!power.status) {
       return { ok: false, error: "Couldn't reach " + tvLabel(activeTv()) + ". If it's fully off, turn on Quick Start on the TV (Menu → System → Power Mode) so the phone can wake it." };
     }
     if (power.vizioResult && /AUTH/.test(power.vizioResult)) return { ok: false, error: describeError(power) };
     if (readPowerOn(power) !== false) return { ok: true, wasOff: false };
-    status("Turning on the TV…");
+    status("Turning on " + tvLabel(activeTv()) + "…");
     await sendKey("pow_on");
     for (var i = 0; i < 20; i++) {
       await delay(1000);
@@ -368,6 +478,7 @@
     window.scrollTo(0, 0);
   }
   $$(".tab").forEach(function (b) { b.addEventListener("click", function () { haptic(); showScreen(b.dataset.screen); }); });
+  $("#remoteTv").addEventListener("click", function () { haptic(); if (!getTvs().length) openOnboarding("find"); else openTvPicker(); });
   $("#tvChip").addEventListener("click", function () {
     haptic();
     if (!getTvs().length) openOnboarding("find"); else openTvPicker();
@@ -378,6 +489,8 @@
 
   function renderTvChip() {
     var tv = activeTv(), chip = $("#tvChip");
+    var rn = document.getElementById("remoteTvName");
+    if (rn) rn.textContent = tv ? tvLabel(tv) : "no TV yet";
     chip.className = "tv-chip " + (!tv ? "" : tv.paired ? "ok" : "warn");
     $("#tvChipText").textContent = !tv ? "Set up TV" : tvLabel(tv) + (tv.paired ? "" : " · not paired");
   }
@@ -572,7 +685,7 @@
     btn.classList.add("busy");
     try {
       var power = await ensureOn(status);
-      if (!power.ok) { toast(power.error, { bad: true, duration: 7000 }); return; }
+      if (!power.ok) { toast(power.error, { bad: true, duration: 8000 }); return; }
       if (run.stop) return;
       applyShowVolume(show);
 
@@ -630,8 +743,9 @@
     btn.classList.add("busy");
     try {
       var power = await tvCall("GET", "/state/device/power_mode", null, { timeout: 3000 });
+      if (power.wrongTv) { toast(power.error, { bad: true, duration: 8000 }); return; }
       if (power.status && readPowerOn(power) === false) {
-        toast("Turning on the TV…");
+        toast("Turning on " + tvLabel(activeTv()) + "…");
         await sendKey("pow_on");
         await delay(600);
       }
@@ -1245,6 +1359,7 @@
       b.addEventListener("click", function () {
         haptic();
         var t = getTvs().find(function (x) { return x.id === b.dataset.tv; });
+        if (!canSwitchTv()) return;
         if (!t.paired) { closeSheet(); setActive(t.id); pairTv(t); return; }
         setActive(t.id); closeSheet(); toast("Now controlling " + tvLabel(t));
       });
@@ -1272,7 +1387,7 @@
         if (n != null && n.trim() !== (t.name || "")) { updateTv(id, function (x) { x.name = n.trim(); }); renderSettings(); }
       }
     );
-    on("tvUse", function () { setActive(id); closeSheet(); toast("Now controlling " + tvLabel(t)); });
+    on("tvUse", function () { if (!canSwitchTv()) return; setActive(id); closeSheet(); toast("Now controlling " + tvLabel(t)); });
     on("tvTest", async function () {
       setMsg("tvMsg", "Checking…");
       var res = await tvCall("GET", "/state/device/power_mode", null, { tv: t });
@@ -1472,6 +1587,7 @@
   function chooseFound(f) {
     var known = getTvs().find(function (t) { return t.ip === f.ip; });
     if (known && known.paired) {
+      if (!canSwitchTv()) return;
       setActive(known.id);
       closeOnboarding();
       toast("Now controlling " + tvLabel(known));
@@ -1523,7 +1639,13 @@
     t.ip = ob.target.ip; t.port = ob.target.port || 0;
     t.name = t.name || ob.target.name || ""; t.model = t.model || ob.target.model || "";
     t.deviceId = ob.pair.deviceId; t.authToken = token; t.paired = true;
+    t.ident = null;
     setTvs(l);
+    (function (id, target) {
+      probeTv(target).then(function (p) {
+        if (p.ident) updateTv(id, function (x) { x.ident = p.ident; if (!x.model && p.model) x.model = p.model; });
+      });
+    })(t.id, { ip: t.ip, port: t.port, authToken: token });
     setActive(t.id);
     ob.pair = null;
     haptic();

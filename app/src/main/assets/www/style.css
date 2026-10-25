@@ -528,3 +528,13 @@ input[type=range]:disabled { opacity: .4; }
 .link-row { display: flex; gap: 18px; padding-top: 8px; }
 .link-row .link-btn { padding: 0; }
 .card.inset .input { background: var(--surface-3); }
+
+/* v2.0: which TV the remote controls */
+.controlling {
+  display: flex; align-items: center; gap: 8px; margin: 0 auto 14px; padding: 8px 14px;
+  border-radius: 999px; background: var(--surface); border: 1px solid var(--line);
+  font-size: 13px; color: var(--text-2);
+}
+.controlling b { color: var(--text); }
+.controlling .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.controlling .chev { font-size: 18px; padding: 0; }
