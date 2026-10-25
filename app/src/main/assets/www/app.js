@@ -1334,6 +1334,102 @@
   syncVolumeKeys();
 
   // =====================================================================
+  // In-app updates (GitHub releases)
+  // =====================================================================
+  var update = null; // { version, url, notes } when a newer version exists
+  function currentVersion() {
+    try { return (hasBridge() && VizioBridge.appVersion && VizioBridge.appVersion()) || ""; } catch (e) { return ""; }
+  }
+  function newerThan(a, b) {
+    var pa = String(a).replace(/^v/i, "").split("."), pb = String(b).replace(/^v/i, "").split(".");
+    for (var i = 0; i < Math.max(pa.length, pb.length); i++) {
+      var x = parseInt(pa[i] || "0", 10), y = parseInt(pb[i] || "0", 10);
+      if (x !== y) return x > y;
+    }
+    return false;
+  }
+  function setUpdStatus(text, cls) {
+    var el = $("#updateStatus");
+    el.textContent = text;
+    el.className = "ri-sub" + (cls === "ok" ? " good" : cls === "bad" ? " bad-txt" : "");
+  }
+  function renderUpdateUi() {
+    var b = $("#updateBanner");
+    var dismissed = getJSON("remotetv.updateDismissed", "");
+    b.classList.toggle("hidden", !update || dismissed === update.version);
+    if (update) $("#updateBannerTitle").textContent = "Version " + update.version + " is available";
+    var v = currentVersion();
+    $("#appVer").textContent = v ? "v" + v : "";
+  }
+  function checkForUpdate(manual) {
+    if (!hasBridge() || !VizioBridge.checkUpdateAsync) { if (manual) setUpdStatus("Updates can only be checked inside the app."); return; }
+    if (!manual && Date.now() - getJSON("remotetv.updateCheckedAt", 0) < 12 * 3600e3) {
+      update = getJSON("remotetv.updateAvailable", null);
+      if (update && !newerThan(update.version, currentVersion())) update = null;
+      renderUpdateUi();
+      return;
+    }
+    if (manual) setUpdStatus("Checking…");
+    var id = uid();
+    pending[id] = function (res) {
+      if (!res.ok) { if (manual) setUpdStatus(res.error, "bad"); return; }
+      var rel; try { rel = JSON.parse(res.body); } catch (e) { rel = null; }
+      var asset = rel && (rel.assets || []).find(function (a) { return /\.apk$/i.test(a.name); });
+      var ver = rel && String(rel.tag_name || "").replace(/^v/i, "");
+      setJSON("remotetv.updateCheckedAt", Date.now());
+      if (ver && asset && newerThan(ver, currentVersion())) {
+        update = { version: ver, url: asset.browser_download_url, notes: String(rel.body || "").slice(0, 600) };
+        if (manual) setUpdStatus("Version " + ver + " is available.", "ok");
+      } else {
+        update = null;
+        if (manual) setUpdStatus("You're on the latest version.", "ok");
+      }
+      setJSON("remotetv.updateAvailable", update);
+      renderUpdateUi();
+      if (manual && update) openUpdateSheet();
+    };
+    VizioBridge.checkUpdateAsync(id);
+  }
+  function openUpdateSheet() {
+    if (!update) return;
+    var u = update;
+    openSheet(
+      '<h2>Update to version ' + esc(u.version) + '</h2>' +
+      '<p class="lead">You\'re on version ' + esc(currentVersion() || "?") + '. Your shows, TVs and recorded steps are kept.</p>' +
+      '<div class="update-progress hidden" id="upProg"><div class="bar"><i id="upBar"></i></div><span id="upPct">0%</span></div>' +
+      '<div class="status-msg" id="upMsg"></div>' +
+      '<div class="sheet-actions">' +
+        '<button class="btn primary big block" id="upGo">' + icon("download") + 'Download and install</button>' +
+        '<button class="btn ghost block" id="upLater">Not now</button>' +
+      '</div>'
+    );
+    on("upLater", function () { setJSON("remotetv.updateDismissed", u.version); closeSheet(); renderUpdateUi(); });
+    on("upGo", function () {
+      var b = $("#upGo"); b.disabled = true;
+      $("#upProg").classList.remove("hidden");
+      setMsg("upMsg", "Downloading…");
+      var id = uid();
+      pending[id] = function (res) {
+        b.disabled = false;
+        if (res.ok) { setMsg("upMsg", "Almost done. Tap Update in the box Android shows.", "ok"); return; }
+        $("#upProg").classList.add("hidden");
+        if (res.needsPermission) {
+          setMsg("upMsg", "Android needs your OK first: turn on \"Allow from this source\" for Remote on the screen that just opened, then come back and tap Download again.", "bad");
+        } else {
+          setMsg("upMsg", "Couldn't update: " + (res.error || "unknown error") + ". You can try again.", "bad");
+        }
+      };
+      VizioBridge.installUpdateAsync(id, u.url);
+    });
+  }
+  window.onUpdateProgress = function (pct) {
+    var bar = document.getElementById("upBar");
+    if (bar) { bar.style.width = pct + "%"; $("#upPct").textContent = pct + "%"; }
+  };
+  $("#updateBanner").addEventListener("click", function () { haptic(); openUpdateSheet(); });
+  $("#checkUpdateBtn").addEventListener("click", function () { haptic(); checkForUpdate(true); });
+
+  // =====================================================================
   // TV picker + management
   // =====================================================================
   function tvRow(t, active, withCheck) {
@@ -1668,7 +1764,7 @@
     if (current !== "watch") { showScreen("watch"); return true; }
     return false;
   };
-  window.onAppResume = function () { checkAutoAdvance(); };
+  window.onAppResume = function () { checkAutoAdvance(); checkForUpdate(false); };
   document.addEventListener("visibilitychange", function () { if (!document.hidden) checkAutoAdvance(); });
 
   // =====================================================================
@@ -1693,6 +1789,8 @@
 
   renderTvChip();
   checkAutoAdvance();
+  renderUpdateUi();
+  setTimeout(function () { checkForUpdate(false); }, 1500);
   showScreen("watch");
   if (!getTvs().length && !getJSON("remotetv.onboarded", false)) openOnboarding("welcome");
 })();

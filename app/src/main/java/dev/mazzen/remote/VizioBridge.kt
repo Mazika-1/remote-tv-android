@@ -2,7 +2,11 @@ package dev.mazzen.remote
 
 import android.content.ClipboardManager
 import android.content.Context
+import android.app.PendingIntent
 import android.content.Intent
+import android.content.pm.PackageInstaller
+import android.os.Build
+import android.provider.Settings
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Handler
@@ -345,6 +349,93 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         }
         latch.await(2, TimeUnit.SECONDS)
         return text
+    }
+
+    // ------------------------------------------------------------------
+    // In-app updates (from this app's GitHub releases)
+    // ------------------------------------------------------------------
+
+    @JavascriptInterface
+    fun appVersion(): String = try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+    } catch (e: Exception) {
+        ""
+    }
+
+    /** Fetches the latest GitHub release as raw JSON: {"ok":true,"body":"..."} */
+    @JavascriptInterface
+    fun checkUpdateAsync(cbId: String) {
+        Thread {
+            val body = httpGet("https://api.github.com/repos/Mazika-1/remote-tv-android/releases/latest", 8000)
+            deliver(cbId, if (body != null) JSONObject().put("ok", true).put("body", body).toString()
+            else JSONObject().put("ok", false).put("error", "Couldn't reach GitHub. Check your internet connection.").toString())
+        }.start()
+    }
+
+    /**
+     * Downloads the APK and hands it to Android's installer, which then asks
+     * "Update this app?". Progress goes to window.onUpdateProgress(percent).
+     * Result: {"ok":true} once the confirmation is on its way,
+     * {"ok":false,"needsPermission":true} if "Install unknown apps" is off
+     * (the settings screen is opened for you), or {"ok":false,"error":"..."}.
+     */
+    @JavascriptInterface
+    fun installUpdateAsync(cbId: String, url: String) {
+        Thread {
+            try {
+                if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+                    main.post {
+                        try {
+                            context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + context.packageName))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        } catch (e: Exception) {}
+                    }
+                    deliver(cbId, JSONObject().put("ok", false).put("needsPermission", true).toString())
+                    return@Thread
+                }
+
+                val conn = URL(url).openConnection() as HttpURLConnection
+                conn.instanceFollowRedirects = true
+                conn.connectTimeout = 15000
+                conn.readTimeout = 30000
+                if (conn.responseCode !in 200..299) throw Exception("download failed (HTTP ${conn.responseCode})")
+                val total = conn.contentLengthLong
+
+                val installer = context.packageManager.packageInstaller
+                val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+                val sessionId = installer.createSession(params)
+                installer.openSession(sessionId).use { session ->
+                    conn.inputStream.use { input ->
+                        session.openWrite("update.apk", 0, if (total > 0) total else -1).use { out ->
+                            val buf = ByteArray(64 * 1024)
+                            var done = 0L
+                            var lastPct = -1
+                            while (true) {
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                done += n
+                                if (total > 0) {
+                                    val pct = (done * 100 / total).toInt()
+                                    if (pct != lastPct) {
+                                        lastPct = pct
+                                        main.post { webView.evaluateJavascript("window.onUpdateProgress && window.onUpdateProgress($pct)", null) }
+                                    }
+                                }
+                            }
+                            session.fsync(out)
+                        }
+                    }
+                    var flags = PendingIntent.FLAG_UPDATE_CURRENT
+                    if (Build.VERSION.SDK_INT >= 31) flags = flags or PendingIntent.FLAG_MUTABLE
+                    val pi = PendingIntent.getBroadcast(context, sessionId, Intent(context, InstallReceiver::class.java), flags)
+                    session.commit(pi.intentSender)
+                }
+                deliver(cbId, JSONObject().put("ok", true).toString())
+            } catch (e: Exception) {
+                deliver(cbId, JSONObject().put("ok", false).put("error", e.message ?: "download failed").toString())
+            }
+        }.start()
     }
 
     /** Set from the page's Settings switch; read by MainActivity on volume key presses. */

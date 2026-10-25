@@ -21,6 +21,7 @@
   <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" fill="none"/></symbol>
   <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M16 9.5l5 5M21 9.5l-5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
   <symbol id="i-vol" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10.5l5 5 5-5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M5 19.5h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
   <symbol id="i-input" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="13" rx="2.5" stroke="currentColor" stroke-width="2" fill="none"/><path d="M9 11h6M13 8.5L15.5 11 13 13.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
   <symbol id="i-back" viewBox="0 0 24 24"><path d="M9 7l-5 5 5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M4 12h10a6 6 0 0 1 0 12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" fill="none" transform="translate(0 -6)"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11l8-6.5 8 6.5v8.5a1 1 0 0 1-1 1h-4.5v-6h-5v6H5a1 1 0 0 1-1-1z" stroke="currentColor" stroke-width="2" stroke-linejoin="round" fill="none"/></symbol>
@@ -44,6 +45,7 @@
   <main>
     <!-- ============ WATCH ============ -->
     <section class="screen" id="screen-watch">
+      <button class="update-banner hidden" id="updateBanner"><span class="ub-icon"><svg><use href="#i-download"/></svg></span><span class="ub-text"><b id="updateBannerTitle">Update available</b><small>Tap to install</small></span><span class="chev">›</span></button>
       <div id="showList" class="show-list"></div>
       <div id="watchEmpty" class="empty hidden">
         <div class="empty-art"><svg><use href="#i-tv"/></svg></div>
@@ -120,6 +122,14 @@
         </label>
       </div>
 
+      <div class="group-label">App updates</div>
+      <div class="card">
+        <div class="row-item">
+          <div class="ri-main"><div class="ri-title">Remote <span id="appVer"></span></div><div class="ri-sub" id="updateStatus">Checks for new versions automatically.</div></div>
+          <button class="pill-btn accent" id="checkUpdateBtn">Check now</button>
+        </div>
+      </div>
+
       <div class="group-label">Episode tracking</div>
       <div class="card">
         <div class="row-item">
@@ -130,7 +140,7 @@
         </div>
       </div>
 
-      <p class="foot">Remote · v2.0</p>
+      <p class="foot">Remote · v2.1</p>
     </section>
   </main>
 
