@@ -193,17 +193,40 @@
     var ports = tv.port ? [tv.port] : [];
     PORTS.forEach(function (p) { if (ports.indexOf(p) < 0) ports.push(p); });
     var res;
-    for (var i = 0; i < ports.length; i++) {
-      res = normalize(await rawRequest(tv.ip + ":" + ports[i], method, path, body, tv.authToken, opts.timeout));
-      if (res.status) { // reached something
-        if (ports[i] !== tv.port) {
-          tv.port = ports[i];
-          if (tv.id) updateTv(tv.id, function (t) { t.port = ports[i]; });
+    // A TV on WiFi can be slow to answer the first request after sitting idle,
+    // so if we couldn't even connect, wait a moment and try again, more patiently.
+    var tries = opts.noRetry ? 1 : 2;
+    for (var attempt = 0; attempt < tries; attempt++) {
+      if (attempt) await delay(800);
+      var timeout = attempt ? Math.max(opts.timeout || 5000, 7000) : opts.timeout;
+      for (var i = 0; i < ports.length; i++) {
+        res = normalize(await rawRequest(tv.ip + ":" + ports[i], method, path, body, tv.authToken, timeout));
+        if (res.status) { // reached something
+          if (ports[i] !== tv.port) {
+            tv.port = ports[i];
+            if (tv.id) updateTv(tv.id, function (t) { t.port = ports[i]; });
+          }
+          return res;
         }
-        return res;
       }
+      // Only retry when the request never got there (safe: it can't double-press a button).
+      if (!/connect|unreachable|refused|no route|timed out/i.test(res.error || "") || /read timed out/i.test(res.error || "")) break;
     }
     return res;
+  }
+
+  // ---------- explaining why a TV can't be reached ----------
+  function phoneNetwork() {
+    try { return JSON.parse(VizioBridge.networkStatus()); } catch (e) { return null; }
+  }
+  function unreachableMessage(tv) {
+    var name = tvLabel(tv), net = hasBridge() && VizioBridge.networkStatus ? phoneNetwork() : null;
+    if (net && !net.wifi) return "Your phone isn't on WiFi right now (it may be using mobile data), so it can't reach " + name + ". Connect to the same WiFi as the TV.";
+    var sub = function (ip) { return String(ip || "").split(".").slice(0, 3).join("."); };
+    if (net && net.ip && tv && tv.ip && sub(net.ip) !== sub(tv.ip)) {
+      return "Your phone is on a different WiFi network (" + sub(net.ip) + ".x) than " + name + " (" + sub(tv.ip) + ".x). Switch your phone to the TV's WiFi, or re-add the TV in Settings.";
+    }
+    return name + " didn't answer, and the app couldn't find it on your WiFi. If it's on, check it's connected to WiFi (TV Menu → Network). If it's off, turn on Quick Start (Menu → System → Power Mode) so the phone can wake it.";
   }
 
   // ---------- making sure it's the TV you picked ----------
@@ -237,7 +260,7 @@
     return true;
   }
 
-  var verifiedAt = {}, verifying = null;
+  var verifiedAt = {}, verifying = null, lastSearchFail = {};
   function verifyActive() {
     var tv = activeTv();
     if (!tv || !tv.ip || !tv.paired) return Promise.resolve({ ok: true });
@@ -251,7 +274,16 @@
   }
   async function verifyTv(tv) {
     var probe = await probeTv(tv);
-    if (!probe.reached) return { ok: true }; // off/unreachable: requests just fail, nothing reaches another TV
+    if (!probe.reached) {
+      // Nothing at the saved address. The router may have given the TV a new one: look for it.
+      if (Date.now() - (lastSearchFail[tv.id] || 0) < 120000) return { ok: false, error: unreachableMessage(tv) };
+      var net = hasBridge() && VizioBridge.networkStatus ? phoneNetwork() : null;
+      var sub = function (ip) { return String(ip || "").split(".").slice(0, 3).join("."); };
+      if (net && (!net.wifi || (net.ip && sub(net.ip) !== sub(tv.ip)))) return { ok: false, error: unreachableMessage(tv) }; // searching can't help
+      var found = await relocateTv(tv, "unreachable");
+      if (!found.ok) lastSearchFail[tv.id] = Date.now();
+      return found;
+    }
     var good = looksLikeTv(tv, probe) && (tv.ident ? true : await acceptsToken(tv));
     if (!good) return relocateTv(tv);
     if (!tv.ident && probe.ident) updateTv(tv.id, function (t) { t.ident = probe.ident; if (!t.model && probe.model) t.model = probe.model; });
@@ -266,12 +298,14 @@
     });
   }
   /** The selected TV isn't at its saved address any more: find it by identity. */
-  async function relocateTv(tv) {
-    toast("A different TV is at " + tvLabel(tv) + "'s address. Nothing was sent. Looking for " + tvLabel(tv) + "…", { sticky: true });
+  async function relocateTv(tv, reason) {
+    toast(reason === "unreachable"
+      ? tvLabel(tv) + " isn't answering at its usual address. Looking for it on your WiFi…"
+      : "A different TV is at " + tvLabel(tv) + "'s address. Nothing was sent. Looking for " + tvLabel(tv) + "…", { sticky: true });
     var found = await scanNetwork();
     for (var i = 0; i < found.length; i++) {
       var f = found[i];
-      if (f.ip === tv.ip) continue;
+      if (f.ip === tv.ip && reason !== "unreachable") continue;
       var target = { ip: f.ip, port: f.port, authToken: tv.authToken };
       var probe = await probeTv(target);
       if (!probe.reached || !looksLikeTv(tv, probe)) continue;
@@ -281,6 +315,7 @@
       return { ok: true, cache: true, key: tv.id + "@" + f.ip };
     }
     hideToast();
+    if (reason === "unreachable") return { ok: false, error: unreachableMessage(tv) };
     return { ok: false, error: "Couldn't find " + tvLabel(tv) + ". Another TV now has its address, so nothing was sent to it. Make sure " + tvLabel(tv) + " is on, or pair it again in Settings." };
   }
 
@@ -288,7 +323,7 @@
     if (res.wrongTv) return res.error;
     if (res.noTv) return "Set up your TV first.";
     if (res.vizioResult && /AUTH/.test(res.vizioResult)) return "The TV doesn't recognise this phone any more. Pair it again in Settings.";
-    if (!res.status) return "Couldn't reach " + tvLabel(activeTv()) + ". Check it's plugged in and your phone is on the same WiFi.";
+    if (!res.status) return unreachableMessage(activeTv());
     return res.error || ("TV replied with error " + res.status);
   }
 
@@ -369,7 +404,7 @@
     var power = await tvCall("GET", "/state/device/power_mode", null, { timeout: 4000 });
     if (power.wrongTv) return { ok: false, error: power.error };
     if (!power.status) {
-      return { ok: false, error: "Couldn't reach " + tvLabel(activeTv()) + ". If it's fully off, turn on Quick Start on the TV (Menu → System → Power Mode) so the phone can wake it." };
+      return { ok: false, error: unreachableMessage(activeTv()) };
     }
     if (power.vizioResult && /AUTH/.test(power.vizioResult)) return { ok: false, error: describeError(power) };
     if (readPowerOn(power) !== false) return { ok: true, wasOff: false };
@@ -1487,7 +1522,7 @@
     on("tvTest", async function () {
       setMsg("tvMsg", "Checking…");
       var res = await tvCall("GET", "/state/device/power_mode", null, { tv: t });
-      if (!res.status) return setMsg("tvMsg", "Couldn't reach it. Check it's plugged in and on the same WiFi.", "bad");
+      if (!res.status) return setMsg("tvMsg", unreachableMessage(t), "bad");
       if (res.vizioResult && /AUTH/.test(res.vizioResult)) return setMsg("tvMsg", "Reached the TV, but it needs pairing again.", "bad");
       setMsg("tvMsg", "Connected. The TV is " + (readPowerOn(res) === false ? "in standby." : "on."), "ok");
     });
@@ -1706,7 +1741,7 @@
     if (ob.step !== "pair") return;
     if (!res.ok || !res.json || !res.json.ITEM) {
       if (lead) lead.textContent = "The TV didn't respond.";
-      setMsg("obMsg", (res.status ? (res.error || "Error " + res.status) : "Couldn't reach the TV.") + "\nIs it on? You can go back and pick a different TV.", "bad");
+      setMsg("obMsg", res.status ? (res.error || "Error " + res.status) + "\nYou can go back and pick a different TV." : unreachableMessage({ ip: ob.target.ip, name: ob.target.name || ob.target.ip }), "bad");
       return;
     }
     ob.target.port = target.port;

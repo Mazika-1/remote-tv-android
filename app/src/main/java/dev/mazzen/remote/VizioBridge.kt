@@ -7,6 +7,9 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
 import android.provider.Settings
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Handler
@@ -95,7 +98,10 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
 
     private fun request(host: String, method: String, path: String, bodyJson: String, authToken: String, timeoutMs: Int): String {
         return try {
-            val conn = URL("https://$host$path").openConnection() as HttpURLConnection
+            // Always over WiFi: if Android prefers mobile data (weak WiFi, or WiFi
+            // without internet), a request to a TV's local address would never arrive.
+            val url = URL("https://$host$path")
+            val conn = (wifiNetwork()?.openConnection(url) ?: url.openConnection()) as HttpURLConnection
 
             if (conn is HttpsURLConnection) {
                 // Explicit setter calls (not Kotlin property syntax) on purpose:
@@ -158,6 +164,7 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
                 return@Thread
             }
 
+            scanNet = wifiNetwork()
             val prefix = net.first
             val ssdpNames = Collections.synchronizedMap(mutableMapOf<String, Triple<String, String, String>>())
             val ssdp = Thread { ssdpDiscover(ssdpNames) }.apply { start() }
@@ -208,10 +215,41 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         }.start()
     }
 
+    /** The WiFi (or wired) network, which is the only one that can reach a TV. */
+    @Volatile private var scanNet: Network? = null
+
+    private fun wifiNetwork(): Network? = try {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        @Suppress("DEPRECATION")
+        cm.allNetworks.firstOrNull { n ->
+            val caps = cm.getNetworkCapabilities(n)
+            caps != null && (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** For troubleshooting: is the phone on WiFi, and what is its address? */
+    @JavascriptInterface
+    fun networkStatus(): String {
+        val wifi = wifiNetwork() != null
+        val net = wifiNetwork()
+        var ip = ""
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val props = if (net != null) cm.getLinkProperties(net) else null
+            ip = props?.linkAddresses?.firstOrNull { it.address is Inet4Address }?.address?.hostAddress ?: ""
+        } catch (e: Exception) {}
+        return JSONObject().put("wifi", wifi).put("ip", ip).toString()
+    }
+
     private fun ipNum(ip: String): Long = ip.split('.').fold(0L) { acc, p -> acc * 256 + (p.toLongOrNull() ?: 0) }
 
     private fun portOpen(ip: String, port: Int, timeout: Int): Boolean = try {
-        Socket().use { it.connect(InetSocketAddress(ip, port), timeout) }
+        Socket().use { sock ->
+            scanNet?.bindSocket(sock)
+            sock.connect(InetSocketAddress(ip, port), timeout)
+        }
         true
     } catch (e: Exception) {
         false
@@ -224,6 +262,7 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         val locations = mutableMapOf<String, String>()
         try {
             DatagramSocket().use { sock ->
+                try { scanNet?.bindSocket(sock) } catch (e: Exception) {}
                 sock.soTimeout = 400
                 val group = InetAddress.getByName("239.255.255.250")
                 for (st in listOf("urn:dial-multiscreen-org:service:dial:1", "upnp:rootdevice", "ssdp:all")) {
@@ -274,8 +313,10 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         null
     }
 
-    private fun httpGet(url: String, timeout: Int): String? = try {
-        val conn = URL(url).openConnection() as HttpURLConnection
+    private fun httpGet(url: String, timeout: Int, local: Boolean = true): String? = try {
+        val u = URL(url)
+        val net = if (local) wifiNetwork() else null
+        val conn = (net?.openConnection(u) ?: u.openConnection()) as HttpURLConnection
         conn.connectTimeout = timeout
         conn.readTimeout = timeout
         if (conn.responseCode in 200..299) conn.inputStream.bufferedReader().use { it.readText() } else null
@@ -366,7 +407,7 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
     @JavascriptInterface
     fun checkUpdateAsync(cbId: String) {
         Thread {
-            val body = httpGet("https://api.github.com/repos/Mazika-1/remote-tv-android/releases/latest", 8000)
+            val body = httpGet("https://api.github.com/repos/Mazika-1/remote-tv-android/releases/latest", 8000, local = false)
             deliver(cbId, if (body != null) JSONObject().put("ok", true).put("body", body).toString()
             else JSONObject().put("ok", false).put("error", "Couldn't reach GitHub. Check your internet connection.").toString())
         }.start()
