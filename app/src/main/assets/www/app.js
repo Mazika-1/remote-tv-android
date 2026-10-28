@@ -1410,7 +1410,7 @@
   }
   function checkForUpdate(manual) {
     if (!hasBridge() || !VizioBridge.checkUpdateAsync) { if (manual) setUpdStatus("Updates can only be checked inside the app."); return; }
-    if (!manual && Date.now() - getJSON("remotetv.updateCheckedAt", 0) < 3 * 3600e3) {
+    if (!manual && Date.now() - getJSON("remotetv.updateCheckedAt", 0) < 2 * 60e3) {
       update = getJSON("remotetv.updateAvailable", null);
       if (update && !newerThan(update.version, currentVersion())) update = null;
       renderUpdateUi();
