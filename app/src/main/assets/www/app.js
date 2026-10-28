@@ -98,6 +98,10 @@
     var t = new Date((date || new Date()).getTime() - DAY_START_HOUR * 3600e3);
     return Math.floor(Date.UTC(t.getFullYear(), t.getMonth(), t.getDate()) / 864e5);
   }
+  /** Episodes to move forward per night (per show; new shows start from the Settings default). */
+  function defaultPerNight() { return Math.max(1, Math.min(10, getJSON("remotetv.perNight", 1))); }
+  function perNight(s) { return Math.max(1, Math.min(10, Number(s.perNight) || 1)); }
+
   function applyAutoAdvance() {
     var today = tvDay(), list = getShows(), changes = [], dirty = false;
     list.forEach(function (s) {
@@ -106,10 +110,10 @@
       if (today <= s.lastDay) return;
       var bump = 0;
       if (s.auto === "nightly") {
-        bump = today - s.lastDay;
+        bump = (today - s.lastDay) * perNight(s);
       } else if (s.auto === "watched") {
         var last = s.lastDay;
-        bump = (s.playedDays || []).filter(function (d) { return d >= last && d < today; }).length;
+        bump = (s.playedDays || []).filter(function (d) { return d >= last && d < today; }).length * perNight(s);
         s.playedDays = (s.playedDays || []).filter(function (d) { return d >= today; });
       }
       if (bump > 0) { changes.push({ id: s.id, name: s.name, from: s.episode, to: s.episode + bump }); s.episode += bump; }
@@ -574,7 +578,9 @@
       var mode = showMode(s);
       var hasSteps = mode === "steps";
       var isReady = ready && ready.showId === s.id;
-      var autoTxt = s.auto === "nightly" ? "Next ep. tomorrow" : s.auto === "watched" ? "+1 after nights you watch" : "";
+      var pn = perNight(s);
+      var autoTxt = s.auto === "nightly" ? (pn > 1 ? "+" + pn + " eps tomorrow" : "Next ep. tomorrow")
+        : s.auto === "watched" ? "+" + pn + (pn > 1 ? " eps" : "") + " after nights you watch" : "";
       var foot = isReady
         ? '<div class="ready-bar"><span class="rec-dot ready"></span><span class="ready-txt">' + (ready.paused ? "Paused at the start on your TV" : "Playing on your TV") + '</span>' +
             '<button class="mini-btn" data-act="tv-pause" aria-label="Pause">' + icon("pause") + '</button>' +
@@ -868,7 +874,7 @@
   // ---------- add / edit show ----------
   function openShowSheet(show) {
     var isNew = !show;
-    var s = show || { name: "", service: "Max", season: 1, episode: 1, auto: "nightly" };
+    var s = show || { name: "", service: "Max", season: 1, episode: 1, auto: "nightly", perNight: defaultPerNight() };
     var sel = s.service, auto = s.auto || "off";
     var nSteps = (s.steps || []).length;
 
@@ -939,10 +945,13 @@
         numField("fSeason", "Season", s.season) + numField("fEp", "Episode", s.episode) +
       '</div></div>' +
       '<div class="field"><label>Move to next episode automatically</label><div class="seg" id="fAuto">' +
-        segOpt("nightly", "Every night", "+1 episode each morning", auto) +
-        segOpt("watched", "Only nights I watch", "+1 the morning after you tap Play", auto) +
+        segOpt("nightly", "Every night", "Moves forward each morning", auto) +
+        segOpt("watched", "Only nights I watch", "Moves forward the morning after you tap Play", auto) +
         segOpt("off", "Off", "I'll update it myself", auto) +
-      '</div></div>' +
+      '</div>' +
+      '<div class="per-night' + (auto === "off" ? " hidden" : "") + '" id="fPerNightRow"><span><b>Episodes per night</b><small>How many it moves forward each time</small></span>' +
+        numField("fPerNight", "", perNight(s)) + '</div>' +
+      '</div>' +
       '<div class="sheet-actions">' +
         '<button class="btn primary big block" id="fSave">' + (isNew ? "Add show" : "Save") + '</button>' +
         (isNew ? '' : '<button class="btn danger block" id="fDelete">Delete show</button>') +
@@ -958,6 +967,7 @@
     $$("#fAuto .seg-opt", body).forEach(function (b) {
       b.addEventListener("click", function () {
         haptic(); auto = b.dataset.val;
+        $("#fPerNightRow").classList.toggle("hidden", auto === "off");
         $$("#fAuto .seg-opt", body).forEach(function (x) { x.classList.toggle("sel", x === b); });
       });
     });
@@ -977,6 +987,7 @@
       var list = getShows(), t;
       if (isNew) {
         t = { id: uid(), name: name, service: sel, season: season, episode: ep, auto: auto, lastDay: tvDay(), playedDays: [], steps: [], pauseAtStart: true, link: "", linkWorks: false };
+        t.perNight = Math.max(1, Math.min(10, parseInt($("#fPerNight").value, 10) || 1));
         readVolumeFields(t);
         list.push(t);
       } else {
@@ -990,6 +1001,7 @@
           var lk = $("#fLink");
           if (lk && lk.value.trim() !== (t.link || "")) { t.link = lk.value.trim(); t.linkWorks = false; }
           t.name = name; t.service = sel; t.season = season; t.episode = ep; t.auto = auto;
+          t.perNight = Math.max(1, Math.min(10, parseInt($("#fPerNight").value, 10) || 1));
         }
       }
       setShows(list);
@@ -1398,7 +1410,7 @@
   }
   function checkForUpdate(manual) {
     if (!hasBridge() || !VizioBridge.checkUpdateAsync) { if (manual) setUpdStatus("Updates can only be checked inside the app."); return; }
-    if (!manual && Date.now() - getJSON("remotetv.updateCheckedAt", 0) < 12 * 3600e3) {
+    if (!manual && Date.now() - getJSON("remotetv.updateCheckedAt", 0) < 3 * 3600e3) {
       update = getJSON("remotetv.updateAvailable", null);
       if (update && !newerThan(update.version, currentVersion())) update = null;
       renderUpdateUi();
@@ -1540,6 +1552,17 @@
   // =====================================================================
   // SETTINGS
   // =====================================================================
+  // default episodes per night for new shows
+  function renderPerNightDefault() { $("#perNightVal").textContent = defaultPerNight(); }
+  $$("[data-pn]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      haptic();
+      setJSON("remotetv.perNight", Math.max(1, Math.min(10, defaultPerNight() + Number(b.dataset.pn))));
+      renderPerNightDefault();
+    });
+  });
+  renderPerNightDefault();
+
   var patient = $("#patientToggle");
   patient.checked = getJSON("remotetv.patient", false);
   patient.addEventListener("change", function () { haptic(); setJSON("remotetv.patient", patient.checked); });

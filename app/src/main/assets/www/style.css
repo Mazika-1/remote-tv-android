@@ -555,3 +555,13 @@ input[type=range]:disabled { opacity: .4; }
 .update-progress .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--good), #2bb3c0); transition: width .2s; }
 .update-progress span { font-size: 13px; font-weight: 700; min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
 .ri-sub.bad-txt { color: var(--bad); }
+
+/* v2.3: episodes per night */
+.per-night { display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 12px 14px; border-radius: 14px; background: var(--surface-2); }
+.per-night > span { flex: 1; }
+.per-night b { display: block; font-size: 14px; }
+.per-night small { color: var(--text-2); font-size: 12px; }
+.per-night .num-cap { display: none; }
+.per-night .num-field { width: 140px; height: 46px; background: var(--surface-3); }
+.per-night .num-field button { height: 46px; }
+#perNightVal { font-size: 15px; color: var(--text); min-width: 28px; }
