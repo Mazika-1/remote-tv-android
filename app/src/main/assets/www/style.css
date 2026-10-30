@@ -565,3 +565,16 @@ input[type=range]:disabled { opacity: .4; }
 .per-night .num-field { width: 140px; height: 46px; background: var(--surface-3); }
 .per-night .num-field button { height: 46px; }
 #perNightVal { font-size: 15px; color: var(--text); min-width: 28px; }
+
+/* v2.6: fix connection */
+.fix-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.fix-steps li { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; background: var(--surface-2); }
+.fs-icon { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex: none; background: var(--surface-3); }
+.fs-icon .spinner { width: 16px; height: 16px; border-width: 2px; }
+.fs-icon svg { width: 15px; height: 15px; }
+.fix-steps li.ok .fs-icon { background: rgba(56,211,159,.2); color: var(--good); }
+.fix-steps li.bad .fs-icon { background: rgba(255,93,108,.18); color: var(--bad); }
+.fs-text { font-size: 14px; font-weight: 600; padding-top: 3px; }
+.fs-text small { display: block; font-weight: 500; color: var(--text-2); font-size: 13px; margin-top: 3px; }
+.fix-ok { display: flex; gap: 10px; align-items: center; margin-top: 14px; padding: 14px; border-radius: 14px; background: rgba(56,211,159,.14); color: var(--good); font-weight: 600; font-size: 14px; }
+.fix-ok svg { width: 20px; height: 20px; }

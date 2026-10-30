@@ -729,7 +729,7 @@
     btn.classList.add("busy");
     try {
       var power = await ensureOn(status);
-      if (!power.ok) { toast(power.error, { bad: true, duration: 8000 }); return; }
+      if (!power.ok) { connectionError(power.error); return; }
       if (run.stop) return;
       applyShowVolume(show);
 
@@ -787,7 +787,7 @@
     btn.classList.add("busy");
     try {
       var power = await tvCall("GET", "/state/device/power_mode", null, { timeout: 3000 });
-      if (power.wrongTv) { toast(power.error, { bad: true, duration: 8000 }); return; }
+      if (power.wrongTv) { connectionError(power.error); return; }
       if (power.status && readPowerOn(power) === false) {
         toast("Turning on " + tvLabel(activeTv()) + "…");
         await sendKey("pow_on");
@@ -1303,7 +1303,9 @@
       if (Date.now() - lastKeyErr > 4000) {
         lastKeyErr = Date.now();
         var tv = activeTv();
-        toast(!tv || !tv.paired ? "Set up your TV first (tap the button at the top)." : describeError(res), { bad: true });
+        if (!tv || !tv.paired) toast("Set up your TV first (tap the button at the top).", { bad: true });
+        else if (!res.status || res.wrongTv) connectionError(describeError(res));
+        else toast(describeError(res), { bad: true });
       }
     }
   }
@@ -1514,6 +1516,138 @@
     on("pManage", function () { closeSheet(); showScreen("settings"); });
   }
 
+  // =====================================================================
+  // FIX CONNECTION: step-by-step repair for a TV that stopped working
+  // =====================================================================
+  var fixing = false;
+  function connectionError(msg) {
+    var tv = activeTv();
+    toast(msg, tv ? { bad: true, duration: 9000, action: "Fix it", onAction: function () { openFixSheet(tv.id); } } : { bad: true, duration: 8000 });
+  }
+
+  async function openFixSheet(id) {
+    var t = getTvs().find(function (x) { return x.id === id; });
+    if (!t || fixing) return;
+    if (playing || teach) { toast("Wait until the current Play finishes first."); return; }
+    fixing = true;
+    var name = tvLabel(t);
+    openSheet(
+      '<h2>Fixing ' + esc(name) + '</h2>' +
+      '<p class="lead">Checking what\'s wrong. Keep the TV on.</p>' +
+      '<ul class="fix-steps" id="fixSteps"></ul>' +
+      '<div id="fixResult"></div>',
+      function () { fixing = false; }
+    );
+    function step(text) {
+      var li = document.createElement("li");
+      li.className = "run";
+      li.innerHTML = '<span class="fs-icon"><span class="spinner"></span></span><span class="fs-text">' + esc(text) + '</span>';
+      var list = $("#fixSteps"); if (list) list.appendChild(li);
+      return {
+        done: function (ok, detail) {
+          li.className = ok ? "ok" : "bad";
+          li.querySelector(".fs-icon").innerHTML = icon(ok ? "check" : "close");
+          if (detail) li.querySelector(".fs-text").innerHTML = esc(text) + '<small>' + esc(detail) + '</small>';
+        }
+      };
+    }
+    function result(html) { var r = $("#fixResult"); if (r) r.innerHTML = html; }
+    function finishOk(msg) {
+      verifiedAt = {}; lastSearchFail = {};
+      result('<div class="fix-ok">' + icon("check") + '<span>' + esc(msg) + '</span></div>' +
+        '<div class="sheet-actions"><button class="btn primary big block" id="fixDone">Done</button></div>');
+      on("fixDone", closeSheet);
+      renderTvChip(); if (current === "settings") renderSettings();
+    }
+    function offerPair(target, why) {
+      result('<div class="note" style="margin-top:6px">' + esc(why) + '</div>' +
+        '<div class="sheet-actions"><button class="btn primary big block" id="fixPair">Pair again (shows a PIN on the TV)</button></div>' +
+        '<p class="hint" style="margin:10px 4px 0">Your shows, recorded steps and volume settings are kept.</p>');
+      on("fixPair", function () {
+        updateTv(t.id, function (x) { x.ip = target.ip; x.port = target.port || x.port; x.ident = null; });
+        sheetOnClose = null; fixing = false; closeSheet();
+        pairTv(getTvs().find(function (x) { return x.id === t.id; }));
+      });
+    }
+
+    // 1. Phone on the right WiFi?
+    var s1 = step("Your phone is on WiFi");
+    var net = hasBridge() && VizioBridge.networkStatus ? phoneNetwork() : { wifi: true };
+    if (net && !net.wifi) { s1.done(false, "It's using mobile data. Connect to the TV's WiFi, then tap Fix it again."); fixing = false; return; }
+    s1.done(true, net && net.ip ? "Phone address " + net.ip : "");
+
+    // 2. Is the TV where we left it?
+    var s2 = step("Looking for " + name + " at " + t.ip);
+    var probe = await probeTv(t);
+    if (probe.reached && looksLikeTv(t, probe)) {
+      if (await acceptsToken(t)) {
+        s2.done(true, "It answered");
+        if (probe.ident && !t.ident) updateTv(t.id, function (x) { x.ident = probe.ident; });
+        finishOk(name + " is working. If something still fails, try Play again.");
+        fixing = false; return;
+      }
+      s2.done(false, "It answered, but doesn't recognise this phone any more (it may have been reset).");
+      offerPair(t, name + " needs pairing again.");
+      fixing = false; return;
+    }
+    s2.done(false, probe.reached ? "A different device is at that address now" : "Nothing answered there");
+
+    // 3. Search the WiFi for it.
+    var s3 = step("Searching your WiFi for " + name + " (about 10 seconds)");
+    var found = await scanNetwork();
+    var match = null, others = [];
+    for (var i = 0; i < found.length; i++) {
+      var f = found[i], target = { ip: f.ip, port: f.port, authToken: t.authToken };
+      var p = await probeTv(target);
+      if (!p.reached) continue;
+      if (looksLikeTv(t, p) && (await acceptsToken(target))) { match = { f: f, p: p }; break; }
+      var known = getTvs().find(function (x) { return x.ip === f.ip && x.id !== t.id && x.paired; });
+      if (!known) others.push(f);
+    }
+    if (match) {
+      var oldIp = t.ip;
+      updateTv(t.id, function (x) { x.ip = match.f.ip; x.port = match.f.port; if (match.p.ident) x.ident = match.p.ident; });
+      s3.done(true, "Found it at its new address " + match.f.ip + " (was " + oldIp + ")");
+      finishOk("Fixed. " + name + "'s address changed and the app has updated it.");
+      fixing = false; return;
+    }
+    s3.done(false, found.length ? "Found " + found.length + " TV" + (found.length > 1 ? "s" : "") + ", but none recognised this phone as " + name : "No TVs answered");
+
+    // 4. Let the person pick, or type the address.
+    var html = '';
+    if (others.length) {
+      html += '<p class="lead" style="margin:14px 0 10px">Is one of these ' + esc(name) + '? It may have been reset, so it needs pairing again.</p>' +
+        '<div class="found-list">' + others.map(function (f, i) {
+          return '<button class="found" data-fixpick="' + i + '"><div class="ri-icon">' + icon("tv") + '</div><div class="ri-main">' +
+            '<div class="ri-title">' + esc(f.name || f.model || "Vizio TV") + '</div><div class="ri-sub">' + esc([f.name && f.model ? f.model : "", f.ip].filter(Boolean).join(" · ")) + '</div></div><span class="chev">›</span></button>';
+        }).join("") + '</div>';
+    } else {
+      html += '<div class="note" style="margin-top:6px">Check the TV is on and connected to WiFi (TV Menu → Network). If it\'s in standby, turn on Quick Start (Menu → System → Power Mode) so it stays reachable.</div>';
+    }
+    html += '<div class="field" style="margin-top:14px"><label>Or type its IP address (TV Menu → Network → Manual Setup)</label>' +
+      '<div style="display:flex;gap:10px"><input class="input" id="fixIp" inputmode="decimal" placeholder="' + esc(t.ip) + '"><button class="btn primary" id="fixIpGo">Use</button></div></div>' +
+      '<div class="sheet-actions"><button class="btn block" id="fixAgain">Try again</button></div>';
+    result(html);
+    $$("[data-fixpick]").forEach(function (b) {
+      b.addEventListener("click", function () { haptic(); var f = others[Number(b.dataset.fixpick)]; offerPair({ ip: f.ip, port: f.port }, "Pair " + name + " at " + f.ip + "."); });
+    });
+    on("fixAgain", function () { sheetOnClose = null; closeSheet(); fixing = false; setTimeout(function () { openFixSheet(t.id); }, 300); });
+    on("fixIpGo", async function () {
+      var ip = $("#fixIp").value.trim();
+      if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) { toast("That doesn't look like an IP address"); return; }
+      var target = { ip: ip, port: 0, authToken: t.authToken };
+      var p = await probeTv(target);
+      if (!p.reached) { toast("Nothing answered at " + ip + ". Check the number on the TV.", { bad: true }); return; }
+      if (looksLikeTv(t, p) && (await acceptsToken(target))) {
+        updateTv(t.id, function (x) { x.ip = ip; x.port = target.port || 0; if (p.ident) x.ident = p.ident; });
+        finishOk("Fixed. " + name + " is at " + ip + " now.");
+        return;
+      }
+      offerPair(target, "The TV at " + ip + " doesn't recognise this phone yet.");
+    });
+    fixing = false;
+  }
+
   function openTvSheet(id) {
     var t = getTvs().find(function (x) { return x.id === id; });
     if (!t) return;
@@ -1524,6 +1658,7 @@
       '<div class="status-msg" id="tvMsg"></div>' +
       '<div class="sheet-actions">' +
         (isActive ? '' : '<button class="btn primary block" id="tvUse">Use this TV</button>') +
+        '<button class="btn primary block" id="tvFix">' + icon("search") + 'Fix connection</button>' +
         '<button class="btn block" id="tvTest">Test connection</button>' +
         '<button class="btn block" id="tvPair">' + (t.paired ? "Pair again" : "Pair") + '</button>' +
         '<button class="btn danger block" id="tvRemove">Remove this TV</button>' +
@@ -1542,6 +1677,7 @@
       setMsg("tvMsg", "Connected. The TV is " + (readPowerOn(res) === false ? "in standby." : "on."), "ok");
     });
     on("tvPair", function () { closeSheet(); pairTv(t); });
+    on("tvFix", function () { sheetOnClose = null; closeSheet(); setTimeout(function () { openFixSheet(id); }, 250); });
     on("tvRemove", function () {
       var l = getTvs().filter(function (x) { return x.id !== id; });
       setTvs(l);
