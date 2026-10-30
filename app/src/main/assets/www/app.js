@@ -257,6 +257,7 @@
     var res = await rawTvCall("GET", "/menu_native/dynamic/tv_settings/audio/volume", null, { tv: target, timeout: 2500 });
     return !!res.status && !isAuthErr(res);
   }
+  function strongIdent(tv) { return !!(tv.ident && tv.ident.indexOf("sn:") === 0); }
   function looksLikeTv(tv, probe) {
     if (probe.authBad) return false;
     if (tv.ident && probe.ident) return probe.ident === tv.ident;
@@ -288,7 +289,9 @@
       if (!found.ok) lastSearchFail[tv.id] = Date.now();
       return found;
     }
-    var good = looksLikeTv(tv, probe) && (tv.ident ? true : await acceptsToken(tv));
+    // A serial number is proof enough; otherwise also require that the TV accepts
+    // this phone's pairing code (each TV only accepts its own).
+    var good = looksLikeTv(tv, probe) && (strongIdent(tv) ? true : await acceptsToken(tv));
     if (!good) return relocateTv(tv);
     if (!tv.ident && probe.ident) updateTv(tv.id, function (t) { t.ident = probe.ident; if (!t.model && probe.model) t.model = probe.model; });
     return { ok: true, cache: true };
@@ -313,7 +316,7 @@
       var target = { ip: f.ip, port: f.port, authToken: tv.authToken };
       var probe = await probeTv(target);
       if (!probe.reached || !looksLikeTv(tv, probe)) continue;
-      if (!tv.ident && !(await acceptsToken(target))) continue;
+      if (!strongIdent(tv) && !(await acceptsToken(target))) continue;
       updateTv(tv.id, function (t) { t.ip = f.ip; t.port = f.port; if (probe.ident) t.ident = probe.ident; });
       toast("Found " + tvLabel(tv) + " at its new address.", { duration: 3500 });
       return { ok: true, cache: true, key: tv.id + "@" + f.ip };
