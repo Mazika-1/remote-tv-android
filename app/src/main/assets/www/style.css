@@ -578,3 +578,8 @@ input[type=range]:disabled { opacity: .4; }
 .fs-text small { display: block; font-weight: 500; color: var(--text-2); font-size: 13px; margin-top: 3px; }
 .fix-ok { display: flex; gap: 10px; align-items: center; margin-top: 14px; padding: 14px; border-radius: 14px; background: rgba(56,211,159,.14); color: var(--good); font-weight: 600; font-size: 14px; }
 .fix-ok svg { width: 20px; height: 20px; }
+
+/* v2.7: connection status */
+.controlling.down { border-color: rgba(255,93,108,.45); background: rgba(255,93,108,.1); color: #ffb3bb; }
+.controlling.down .dot { background: var(--bad); }
+.fix-pill { margin-left: 4px; padding: 3px 10px; border-radius: 999px; background: var(--bad); color: #fff; font-weight: 700; font-size: 12px; }

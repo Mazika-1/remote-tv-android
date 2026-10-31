@@ -152,11 +152,20 @@
   };
   function hasBridge() { return typeof window.VizioBridge !== "undefined"; }
 
+  // Recent requests, for "Copy details" in Fix connection.
+  var reqLog = [];
+  function logReq(entry) { reqLog.push(entry); if (reqLog.length > 40) reqLog.shift(); }
+
   function rawRequest(host, method, path, body, token, timeout) {
     return new Promise(function (resolve) {
       if (!hasBridge()) { resolve({ ok: false, error: "Not running inside the app." }); return; }
-      var id = uid();
-      pending[id] = resolve;
+      var id = uid(), started = Date.now();
+      pending[id] = function (res) {
+        var r = {}; try { r = JSON.parse(JSON.stringify(res)); } catch (e) {}
+        var result = r.error || ("HTTP " + r.status + (r.body ? " " + String(r.body).slice(0, 90) : ""));
+        logReq(new Date(started).toTimeString().slice(0, 8) + " " + method + " " + host + path + " → " + result + " (" + (Date.now() - started) + "ms)");
+        resolve(res);
+      };
       VizioBridge.requestAsync(id, host, method, path, body ? JSON.stringify(body) : "", token || "", timeout || 5000);
     });
   }
@@ -183,11 +192,30 @@
    */
   async function tvCall(method, path, body, opts) {
     opts = opts || {};
-    if (!opts.tv && !opts.noVerify) {
+    if (opts.tv) return rawTvCall(method, path, body, opts);
+    var tv = activeTv();
+    // Remote buttons fail straight away while the TV is known to be unreachable,
+    // instead of each press waiting ~20s and piling up behind the others.
+    if (opts.fast && tv && isOffline(tv)) return { ok: false, error: unreachableMessage(tv), failedFast: true };
+    if (!opts.noVerify) {
       var v = await verifyActive();
-      if (!v.ok) return { ok: false, error: v.error, wrongTv: true };
+      if (!v.ok) { markHealth(tv, false); return { ok: false, error: v.error, wrongTv: true }; }
     }
-    return rawTvCall(method, path, body, opts);
+    var res = await rawTvCall(method, path, body, opts);
+    markHealth(tv, !!res.status);
+    return res;
+  }
+
+  var health = {}; // tvId -> { ok, at }
+  function markHealth(tv, ok) {
+    if (!tv) return;
+    var prev = health[tv.id];
+    health[tv.id] = { ok: ok, at: Date.now() };
+    if (!prev || prev.ok !== ok) renderTvChip();
+  }
+  function isOffline(tv) {
+    var h = tv && health[tv.id];
+    return !!h && !h.ok && Date.now() - h.at < 15000;
   }
 
   async function rawTvCall(method, path, body, opts) {
@@ -345,7 +373,7 @@
   var KEY_LABELS = { up: "↑", down: "↓", left: "←", right: "→", ok: "OK", back: "Back", play: "Play", pause: "Pause", exit: "Exit", home: "Home" };
   function sendKey(name) {
     var k = KEYS[name];
-    return tvCall("PUT", "/key_command/", { KEYLIST: [{ CODESET: k[0], CODE: k[1], ACTION: "KEYPRESS" }] });
+    return tvCall("PUT", "/key_command/", { KEYLIST: [{ CODESET: k[0], CODE: k[1], ACTION: "KEYPRESS" }] }, { fast: true });
   }
 
   function readPowerOn(res) {
@@ -520,7 +548,13 @@
     window.scrollTo(0, 0);
   }
   $$(".tab").forEach(function (b) { b.addEventListener("click", function () { haptic(); showScreen(b.dataset.screen); }); });
-  $("#remoteTv").addEventListener("click", function () { haptic(); if (!getTvs().length) openOnboarding("find"); else openTvPicker(); });
+  $("#remoteTv").addEventListener("click", function () {
+    haptic();
+    var tv = activeTv(), h = tv && health[tv.id];
+    if (!getTvs().length) openOnboarding("find");
+    else if (h && !h.ok) openFixSheet(tv.id);
+    else openTvPicker();
+  });
   $("#tvChip").addEventListener("click", function () {
     haptic();
     if (!getTvs().length) openOnboarding("find"); else openTvPicker();
@@ -531,9 +565,15 @@
 
   function renderTvChip() {
     var tv = activeTv(), chip = $("#tvChip");
-    var rn = document.getElementById("remoteTvName");
+    var h = tv && health[tv.id], down = !!(h && !h.ok);
+    var rn = document.getElementById("remoteTvName"), rb = document.getElementById("remoteTv");
     if (rn) rn.textContent = tv ? tvLabel(tv) : "no TV yet";
-    chip.className = "tv-chip " + (!tv ? "" : tv.paired ? "ok" : "warn");
+    if (rb) {
+      rb.classList.toggle("down", down);
+      $("#remoteTvLabel").textContent = down ? "Can't reach" : "Controlling";
+      $("#remoteTvFix").classList.toggle("hidden", !down);
+    }
+    chip.className = "tv-chip " + (!tv ? "" : !tv.paired ? "warn" : down ? "bad" : "ok");
     $("#tvChipText").textContent = !tv ? "Set up TV" : tvLabel(tv) + (tv.paired ? "" : " · not paired");
   }
 
@@ -1295,8 +1335,15 @@
   // REMOTE
   // =====================================================================
   var lastKeyErr = 0;
+  var keysInFlight = 0;
   async function pressKey(name, el) {
-    var res = await sendKey(name);
+    var tv = activeTv();
+    if (keysInFlight >= 3) { toast("Still trying to reach " + tvLabel(tv) + "…"); return; }
+    keysInFlight++;
+    var slow = setTimeout(function () { toast("Connecting to " + tvLabel(tv) + "…", { sticky: true }); }, 1200);
+    var res;
+    try { res = await sendKey(name); } finally { clearTimeout(slow); keysInFlight--; }
+    if (res.ok && $("#toastText").textContent.indexOf("Connecting to") === 0) hideToast();
     if (!res.ok) {
       el.classList.add("flash-bad");
       setTimeout(function () { el.classList.remove("flash-bad"); }, 400);
@@ -1525,6 +1572,23 @@
     toast(msg, tv ? { bad: true, duration: 9000, action: "Fix it", onAction: function () { openFixSheet(tv.id); } } : { bad: true, duration: 8000 });
   }
 
+  function detailsText() {
+    var net = hasBridge() && VizioBridge.networkStatus ? phoneNetwork() : null;
+    var tvs = getTvs().map(function (t) {
+      return "- " + tvLabel(t) + (activeTv() && activeTv().id === t.id ? " (selected)" : "") + ": " + t.ip + ":" + (t.port || "?") +
+        (t.paired ? ", paired" : ", not paired") + (t.ident ? ", id " + t.ident.slice(0, 3) : ", no id") +
+        (health[t.id] ? ", last " + (health[t.id].ok ? "OK" : "FAILED") + " " + Math.round((Date.now() - health[t.id].at) / 1000) + "s ago" : "");
+    });
+    return "Remote app v" + currentVersion() + "\n" +
+      "Phone: " + (net ? (net.wifi ? "WiFi " + (net.ip || "?") : "NOT on WiFi") : "?") + "\n" +
+      "TVs:\n" + tvs.join("\n") + "\n" +
+      "Recent requests:\n" + (reqLog.length ? reqLog.join("\n") : "(none)");
+  }
+  function copyDetails() {
+    try { VizioBridge.copyText(detailsText()); toast("Copied. Paste it in your chat with Claude."); }
+    catch (e) { toast("Couldn't copy", { bad: true }); }
+  }
+
   async function openFixSheet(id) {
     var t = getTvs().find(function (x) { return x.id === id; });
     if (!t || fixing) return;
@@ -1535,7 +1599,8 @@
       '<h2>Fixing ' + esc(name) + '</h2>' +
       '<p class="lead">Checking what\'s wrong. Keep the TV on.</p>' +
       '<ul class="fix-steps" id="fixSteps"></ul>' +
-      '<div id="fixResult"></div>',
+      '<div id="fixResult"></div>' +
+      '<button class="btn ghost block" id="fixCopy" style="margin-top:10px">Copy details to send to Claude</button>',
       function () { fixing = false; }
     );
     function step(text) {
@@ -1552,6 +1617,7 @@
       };
     }
     function result(html) { var r = $("#fixResult"); if (r) r.innerHTML = html; }
+    on("fixCopy", copyDetails);
     function finishOk(msg) {
       verifiedAt = {}; lastSearchFail = {};
       result('<div class="fix-ok">' + icon("check") + '<span>' + esc(msg) + '</span></div>' +
@@ -1712,9 +1778,12 @@
       (tvs.length
         ? '<div class="tv-list">' + tvs.map(function (t) { return tvRow(t, cur && t.id === cur.id, false); }).join("") + '</div>'
         : '<div class="row-item"><div class="ri-main"><div class="ri-sub">No TV set up yet.</div></div></div>') +
-      '<div class="btn-row" style="margin-top:12px"><button class="btn' + (tvs.length ? "" : " primary") + '" id="sAdd">' + icon("plus") + (tvs.length ? "Add another TV" : "Set up TV") + '</button></div>';
+      '<div class="btn-row" style="margin-top:12px">' +
+        (cur && cur.paired ? '<button class="btn" id="sFix">' + icon("search") + 'Fix connection</button>' : '') +
+        '<button class="btn' + (tvs.length ? "" : " primary") + '" id="sAdd">' + icon("plus") + (tvs.length ? "Add TV" : "Set up TV") + '</button></div>';
     $$("[data-tv]", $("#tvCard")).forEach(function (b) { b.addEventListener("click", function () { haptic(); openTvSheet(b.dataset.tv); }); });
     on("sAdd", function () { openOnboarding("find"); });
+    on("sFix", function () { openFixSheet(activeTv().id); });
 
     var linked = getLinked(), used = {};
     getShows().forEach(function (s) { used[s.service] = true; });

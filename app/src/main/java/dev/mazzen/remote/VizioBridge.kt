@@ -375,6 +375,17 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         false
     }
 
+    /** Puts text on the clipboard (for "Copy details"). */
+    @JavascriptInterface
+    fun copyText(text: String) {
+        main.post {
+            try {
+                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("Remote app details", text))
+            } catch (e: Exception) {}
+        }
+    }
+
     /** Text currently on the clipboard (for the "Paste" button). */
     @JavascriptInterface
     fun clipboardText(): String {
