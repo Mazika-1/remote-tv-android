@@ -266,12 +266,21 @@
     var body = (res && res.body) || "";
     var sn = /"(?:SERIAL_NUMBER|SERIAL|ESN)"\s*:\s*"([^"]+)"/.exec(body);
     if (sn) return "sn:" + sn[1];
-    var mn = /"MODEL_NAME"\s*:\s*"([^"]+)"/.exec(body), nm = /"(?:CAST_NAME|NAME)"\s*:\s*"([^"]+)"/.exec(body);
+    var mn = /"MODEL_NAME"\s*:\s*"([^"]+)"/.exec(body), nm = /"(?:CAST_NAME|NAME)"\s*:\s*"(?!Vizio Device Info)([^"]+)"/.exec(body);
     return mn || nm ? "mn:" + (mn ? mn[1] : "") + "|" + (nm ? nm[1] : "") : null;
   }
   function modelFrom(res) {
     var mn = /"MODEL_NAME"\s*:\s*"([^"]+)"/.exec((res && res.body) || "");
     return mn ? mn[1] : "";
+  }
+  /** Vizio soundbars answer like TVs; their device info says type "sb". */
+  function kindFrom(res) {
+    var body = (res && res.body) || "";
+    return /"type"\s*:\s*"sb"/.test(body) || /audio_settings/.test(body) ? "soundbar" : "tv";
+  }
+  function soundbarModel(res) {
+    var m = /"NAME"\s*:\s*"(?!Vizio Device Info)([^"]+)"/.exec((res && res.body) || "");
+    return m ? m[1].toUpperCase() : "";
   }
   function isAuthErr(res) { return !!(res && res.vizioResult && /AUTH/.test(res.vizioResult)); }
 
@@ -279,7 +288,7 @@
   async function probeTv(target) {
     var res = await rawTvCall("GET", "/state/device/deviceinfo", null, { tv: target, timeout: 2500 });
     if (res.body) lastDeviceInfo[target.ip] = res.body;
-    return { reached: !!res.status, ident: identFrom(res), model: modelFrom(res), authBad: isAuthErr(res) };
+    return { reached: !!res.status, ident: identFrom(res), model: modelFrom(res), authBad: isAuthErr(res), kind: kindFrom(res) };
   }
   /** Does this TV accept our pairing code? (Another TV won't.) */
   async function acceptsToken(target) {
@@ -299,7 +308,11 @@
   function strongIdent(tv) { return !!(tv.ident && tv.ident.indexOf("sn:") === 0); }
   function looksLikeTv(tv, probe) {
     if (probe.authBad) return false;
-    if (tv.ident && probe.ident) return probe.ident === tv.ident;
+    if (probe.kind === "soundbar" && tv.kind !== "soundbar") return false; // never treat a soundbar as a TV
+    // Only a serial number is proof of identity. A model/name identity is just a
+    // hint (it may even have been recorded from the wrong device), so for those
+    // the pairing-code check decides.
+    if (strongIdent(tv) && probe.ident) return probe.ident === tv.ident;
     if (tv.model && probe.model && tv.model.toUpperCase() !== probe.model.toUpperCase()) return false;
     return true;
   }
@@ -356,7 +369,7 @@
       var probe = await probeTv(target);
       if (!probe.reached || !looksLikeTv(tv, probe)) continue;
       if (!strongIdent(tv) && !(await acceptsToken(target))) continue;
-      updateTv(tv.id, function (t) { t.ip = f.ip; t.port = f.port; if (probe.ident) t.ident = probe.ident; });
+      updateTv(tv.id, function (t) { t.ip = f.ip; t.port = f.port; t.ident = probe.ident || null; if (probe.model) t.model = probe.model; });
       toast("Found " + tvLabel(tv) + " at its new address.", { duration: 3500 });
       return { ok: true, cache: true, key: tv.id + "@" + f.ip };
     }
@@ -1677,7 +1690,9 @@
       offerPair(t, name + " needs pairing again.");
       fixing = false; return;
     }
-    s2.done(false, probe.reached ? "A different device is at that address now" : "Nothing answered there");
+    s2.done(false, !probe.reached ? "Nothing answered there"
+      : probe.kind === "soundbar" ? "That address belongs to a Vizio soundbar now, not " + name + ". Nothing will be sent to it."
+      : "A different device is at that address now");
 
     // 3. Search the WiFi for it.
     var s3 = step("Searching your WiFi for " + name + " (about 10 seconds)");
@@ -1689,7 +1704,7 @@
       if (!p.reached) continue;
       if (looksLikeTv(t, p) && (await acceptsToken(target))) { match = { f: f, p: p }; break; }
       var known = getTvs().find(function (x) { return x.ip === f.ip && x.id !== t.id && x.paired; });
-      if (!known) others.push(f);
+      if (!known && p.kind !== "soundbar" && f.kind !== "soundbar") others.push(f);
     }
     if (match) {
       var oldIp = t.ip;
@@ -1698,7 +1713,9 @@
       finishOk("Fixed. " + name + "'s address changed and the app has updated it.");
       fixing = false; return;
     }
-    s3.done(false, found.length ? "Found " + found.length + " TV" + (found.length > 1 ? "s" : "") + ", but none recognised this phone as " + name : "No TVs answered");
+    var bars = found.filter(function (f) { return f.kind === "soundbar"; }).length, tvCount = found.length - bars;
+    s3.done(false, tvCount ? "Found " + tvCount + " TV" + (tvCount > 1 ? "s" : "") + (bars ? " (and " + bars + " soundbar" + (bars > 1 ? "s" : "") + ")" : "") + ", but none recognised this phone as " + name
+      : bars ? "Only found " + bars + " Vizio soundbar" + (bars > 1 ? "s" : "") + ", no TVs. " + name + " may be off or in deep standby." : "No TVs answered");
 
     // 4. Let the person pick, or type the address.
     var html = '';
@@ -1725,6 +1742,7 @@
       var target = { ip: ip, port: 0, authToken: t.authToken };
       var p = await probeTv(target);
       if (!p.reached) { toast("Nothing answered at " + ip + ". Check the number on the TV.", { bad: true }); return; }
+      if (p.kind === "soundbar") { toast(ip + " is a Vizio soundbar, not a TV. Check the address on " + name + " (Menu → System → System Information).", { bad: true, duration: 7000 }); return; }
       if (looksLikeTv(t, p) && (await acceptsToken(target))) {
         updateTv(t.id, function (x) { x.ip = ip; x.port = target.port || 0; if (p.ident) x.ident = p.ident; });
         finishOk("Fixed. " + name + " is at " + ip + " now.");
@@ -1878,6 +1896,10 @@
         html += '<div class="scanning"><div class="spinner"></div>Looking for every TV on your WiFi (about 10 seconds)…</div>';
       } else if (ob.found && ob.found.length) {
         html += '<div class="found-list">' + ob.found.map(function (f, i) {
+          if (f.kind === "soundbar") {
+            return '<div class="found disabled"><div class="ri-icon">' + icon("vol") + '</div><div class="ri-main">' +
+              '<div class="ri-title">Vizio soundbar' + (f.model ? " " + esc(f.model) : "") + '</div><div class="ri-sub">' + esc(f.ip) + ' · not a TV</div></div></div>';
+          }
           var known = tvs.find(function (t) { return t.ip === f.ip; });
           return '<button class="found" data-found="' + i + '"><div class="ri-icon">' + icon("tv") + '</div><div class="ri-main">' +
             '<div class="ri-title">' + esc((known && known.name) || f.name || f.model || "Vizio TV") + '</div>' +
@@ -1924,7 +1946,10 @@
     on("obIpGo", function () {
       var ip = $("#obIp").value.trim();
       if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) { toast("That doesn't look like an IP address"); return; }
-      chooseFound({ ip: ip, port: 0, name: "", model: "" });
+      probeTv({ ip: ip, port: 0 }).then(function (p) {
+        if (p.kind === "soundbar" && p.reached) { toast(ip + " is a Vizio soundbar, not a TV. Check the TV's address in Menu → System → System Information.", { bad: true, duration: 7000 }); return; }
+        chooseFound({ ip: ip, port: 0, name: "", model: "" });
+      });
     });
     $$("[data-found]", el).forEach(function (b) {
       b.addEventListener("click", function () { haptic(); chooseFound(ob.found[Number(b.dataset.found)]); });

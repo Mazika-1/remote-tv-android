@@ -203,13 +203,13 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
                 if (name.isEmpty()) {
                     castName(ip)?.let { name = it }
                 }
-                if (name.isEmpty() || model.isEmpty()) {
-                    deviceInfo("$ip:$port")?.let { (n, m) ->
-                        if (name.isEmpty()) name = n
-                        if (model.isEmpty()) model = m
-                    }
+                var kind = "tv"
+                deviceInfo("$ip:$port")?.let { (n, m, k) ->
+                    kind = k
+                    if (name.isEmpty()) name = n
+                    if (model.isEmpty()) model = m
                 }
-                arr.put(JSONObject().put("ip", ip).put("port", port).put("name", name).put("model", model))
+                arr.put(JSONObject().put("ip", ip).put("port", port).put("name", name).put("model", model).put("kind", kind))
             }
             deliver(cbId, JSONObject().put("ok", true).put("subnet", prefix).put("found", arr).toString())
         }.start()
@@ -304,11 +304,20 @@ class VizioBridge(private val context: Context, private val webView: WebView) {
         return xmlTag(xml, "friendlyName")
     }
 
-    private fun deviceInfo(host: String): Pair<String, String>? = try {
+    /**
+     * (name, model, kind) from the device's own info. Vizio soundbars answer on
+     * the same ports as TVs; kind is "soundbar" for those (type "sb") so the app
+     * never mistakes one for a TV.
+     */
+    private fun deviceInfo(host: String): Triple<String, String, String>? = try {
         val body = JSONObject(request(host, "GET", "/state/device/deviceinfo", "", "", 1500)).optString("body", "")
-        val name = Regex("\"NAME\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1) ?: ""
-        val model = Regex("\"MODEL_NAME\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1) ?: ""
-        if (name.isEmpty() && model.isEmpty()) null else name to model
+        val names = Regex("\"NAME\"\\s*:\\s*\"([^\"]+)\"").findAll(body).map { it.groupValues[1] }
+            .filter { !it.equals("Vizio Device Info", ignoreCase = true) }.toList()
+        val soundbar = Regex("\"type\"\\s*:\\s*\"sb\"").containsMatchIn(body) || body.contains("audio_settings")
+        var model = Regex("\"MODEL_NAME\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1) ?: ""
+        var name = names.firstOrNull() ?: ""
+        if (soundbar && model.isEmpty()) { model = name.uppercase(); name = "" }
+        if (body.isEmpty()) null else Triple(name, model, if (soundbar) "soundbar" else "tv")
     } catch (e: Exception) {
         null
     }
