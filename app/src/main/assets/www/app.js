@@ -153,7 +153,7 @@
   function hasBridge() { return typeof window.VizioBridge !== "undefined"; }
 
   // Recent requests, for "Copy details" in Fix connection.
-  var reqLog = [];
+  var reqLog = [], lastDeviceInfo = {};
   function logReq(entry) { reqLog.push(entry); if (reqLog.length > 40) reqLog.shift(); }
 
   function rawRequest(host, method, path, body, token, timeout) {
@@ -264,7 +264,7 @@
   // ---------- making sure it's the TV you picked ----------
   function identFrom(res) {
     var body = (res && res.body) || "";
-    var sn = /"SERIAL_NUMBER"\s*:\s*"([^"]+)"/.exec(body);
+    var sn = /"(?:SERIAL_NUMBER|SERIAL|ESN)"\s*:\s*"([^"]+)"/.exec(body);
     if (sn) return "sn:" + sn[1];
     var mn = /"MODEL_NAME"\s*:\s*"([^"]+)"/.exec(body), nm = /"(?:CAST_NAME|NAME)"\s*:\s*"([^"]+)"/.exec(body);
     return mn || nm ? "mn:" + (mn ? mn[1] : "") + "|" + (nm ? nm[1] : "") : null;
@@ -278,12 +278,23 @@
   /** Who is at this address? {reached, ident, model, authBad} */
   async function probeTv(target) {
     var res = await rawTvCall("GET", "/state/device/deviceinfo", null, { tv: target, timeout: 2500 });
+    if (res.body) lastDeviceInfo[target.ip] = res.body;
     return { reached: !!res.status, ident: identFrom(res), model: modelFrom(res), authBad: isAuthErr(res) };
   }
   /** Does this TV accept our pairing code? (Another TV won't.) */
   async function acceptsToken(target) {
-    var res = await rawTvCall("GET", "/menu_native/dynamic/tv_settings/audio/volume", null, { tv: target, timeout: 2500 });
-    return !!res.status && !isAuthErr(res);
+    // Settings reads need this phone's pairing code. Try places that exist on
+    // both old and new firmware; "URI not found" proves nothing either way.
+    var paths = ["/menu_native/dynamic/tv_settings/audio", "/menu_native/dynamic/tv_settings", "/menu_native/dynamic/tv_settings/audio/volume"];
+    var reached = false;
+    for (var i = 0; i < paths.length; i++) {
+      var res = await rawTvCall("GET", paths[i], null, { tv: target, timeout: 2500, noRetry: i > 0 });
+      if (!res.status) return false;
+      reached = true;
+      if (isAuthErr(res)) return false;
+      if (res.ok) return true;
+    }
+    return reached;
   }
   function strongIdent(tv) { return !!(tv.ident && tv.ident.indexOf("sn:") === 0); }
   function looksLikeTv(tv, probe) {
@@ -386,18 +397,25 @@
   // Vizio exposes volume as a TV setting: read it to get its value and a
   // HASHVAL, then write the new value with that HASHVAL.
   var VOL_PATH = "/menu_native/dynamic/tv_settings/audio/volume";
+  // Older Vizio firmware doesn't have the volume setting at VOL_PATH ("URI not
+  // found"); it's listed inside the audio settings menu instead.
+  var AUDIO_PATH = "/menu_native/dynamic/tv_settings/audio";
   async function getVolume(tv) {
     var res = await tvCall("GET", VOL_PATH, null, { tv: tv, timeout: 3000 });
     var item = res.ok && res.json && res.json.ITEMS && res.json.ITEMS[0];
-    if (!item || item.VALUE == null) return null;
-    return { value: Number(item.VALUE), hash: item.HASHVAL };
+    if (item && item.VALUE != null) return { value: Number(item.VALUE), hash: item.HASHVAL, direct: true };
+    if (!res.status) return null;
+    var list = await tvCall("GET", AUDIO_PATH, null, { tv: tv, timeout: 3000 });
+    var items = (list.ok && list.json && list.json.ITEMS) || [];
+    var v = items.find(function (it) { return /volume/i.test(String(it.CNAME || it.NAME || "")) && it.VALUE != null && !isNaN(Number(it.VALUE)); });
+    return v ? { value: Number(v.VALUE), hash: v.HASHVAL, direct: false } : null;
   }
   async function setVolume(n, tv) {
     n = Math.max(0, Math.min(100, Math.round(n)));
     var cur = await getVolume(tv);
     if (!cur) return false;
     if (cur.value === n) return true;
-    var res = await tvCall("PUT", VOL_PATH, { REQUEST: "MODIFY", HASHVAL: cur.hash, VALUE: n }, { tv: tv });
+    var res = cur.direct ? await tvCall("PUT", VOL_PATH, { REQUEST: "MODIFY", HASHVAL: cur.hash, VALUE: n }, { tv: tv }) : { ok: false };
     if (res.ok) return true;
     // Fallback: step there with the volume buttons.
     var diff = n - cur.value, key = diff > 0 ? "vol_up" : "vol_down";
@@ -1377,6 +1395,8 @@
   var volSlider = $("#volSlider"), volKnown = null, volDragging = false, volTarget = null, volBusy = false, volRefreshTimer;
   function showVolume(v) {
     volKnown = v;
+    var tvNow = activeTv(), hint = document.getElementById("volHint");
+    if (hint) hint.classList.toggle("hidden", !(v == null && tvNow && tvNow.paired && health[tvNow.id] && health[tvNow.id].ok));
     $("#volValue").textContent = v == null ? "–" : v;
     if (v != null && !volDragging) { volSlider.value = v; }
     volSlider.style.setProperty("--fill", (v == null ? 0 : v) + "%");
@@ -1582,6 +1602,7 @@
     return "Remote app v" + currentVersion() + "\n" +
       "Phone: " + (net ? (net.wifi ? "WiFi " + (net.ip || "?") : "NOT on WiFi") : "?") + "\n" +
       "TVs:\n" + tvs.join("\n") + "\n" +
+      "Device info (selected TV):\n" + (activeTv() && lastDeviceInfo[activeTv().ip] ? lastDeviceInfo[activeTv().ip].slice(0, 900) : "(none yet)") + "\n" +
       "Recent requests:\n" + (reqLog.length ? reqLog.join("\n") : "(none)");
   }
   function copyDetails() {
